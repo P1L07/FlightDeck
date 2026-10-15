@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#060a15">
+<title>Flight Deck</title>
+
+<link rel="stylesheet" href="styles.css">
+
+
+<!-- PDF-lib logikirjan generointiin -->
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+
+<!-- SunCalc yöajan laskentaan (valinnainen) -->
+<script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<!-- TripInfo -->
+<script src="tripinfo.js"></script>
+
+<!-- NOTAMit -->
+<script src="notam.js"></script>
+
+<!-- Sää -->
+<script src="weather.js"></script>
+
+<!-- Lentokalenteri -->
+<script src="weekview.js"></script>
+
+<!-- ADD -->
+<script src="defects.js"></script> 
+
+<!-- Roster -->
+<script src="roster.js"></script>
+
+<!-- Auditointi -->
+<script src="audit.js"></script>
+
+<!-- Offline tila -->
+<script src="offline.js"></script>
+
+<script src="activeflight.js"></script>
+
+<!-- Kaverit -->
+<script src="friends.js"></script>
+
+<!-- pdf.min -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+
+<!-- Lennon valmistelu -->
+<script src="briefing.js"></script>
+
+<!-- Pääsovellus -->
+<script src="app.js"></script>
+</head>
+<body>
+
+<!-- ============ Ambient background ============ -->
+<div class="-bg" aria-hidden="true">
+  <div class="-glow"></div>
+  <div class="-grid"></div>
+  <div class="-scan"></div>
+</div>
+
+<!-- ============ Top status bar ============ -->
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-logo">
+      <span>FD</span>
+      <span class="brand-ring"></span>
+    </div>
+    <div class="logo-text">FlightDeck</div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="conn-status online" id="conn-status">
+      <span class="conn-dot"></span>
+      <span id="conn-label">Online</span>
+    </div>
+    <div class="topbar-countdown" id="topbar-countdown" style="display:none;">
+      <span class="tc-icon">😴</span>
+      <span class="tc-time" id="topbar-countdown-time">–</span>
+    </div>
+    <div class="clock" id="live-clock">--:--</div>
+  </div>
+</header>
+
+<!-- ============ Main content ============ -->
+<main class="content">
+
+  <!-- ========== HOME ========== -->
+<section class="tab-panel active" id="tab-home">
+  <div class="hero">
+    <div class="hero-greet">
+      <div class="greet-line">Hei,</div>
+      <div class="greet-name" id="user-name">Kapteeni</div>
+    </div>
+    <div class="hero-status">
+      <span class="pulse-dot"></span>
+      <span id="duty-status">Valmiustilassa</span>
+    </div>
+  </div>
+
+  <!-- Nykyinen lento (vain jos aktiivinen) -->
+  <div id="active-flight-card" class="card card-accent af-card" style="display:none;"></div>
+
+    <!-- Seuraava lento (täysleveä) -->
+  <div class="card card-accent" id="next-flight-card">
+    <div class="card-label">
+      <span class="dot dot-live"></span> SEURAAVA LENTO
+    </div>
+    <div id="next-flight-content">
+      <div class="empty">Ei tulevia lentoja</div>
+    </div>
+  </div>
+
+  <!-- Sää (täysleveä) -->
+  <div class="card">
+    <div class="card-label">SÄÄ</div>
+    <div class="home-wx-split">
+      <div class="home-wx-half">
+        <div class="home-wx-sublabel" id="home-wx-dep-label">LÄHTÖ</div>
+        <div class="weather-widget" id="weather-dep">
+          <div class="empty">–</div>
+        </div>
+      </div>
+      <div class="home-wx-half">
+        <div class="home-wx-sublabel" id="home-wx-arr-label">SAAPUMINEN</div>
+        <div class="weather-widget" id="weather-arr">
+          <div class="empty">–</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+  <!-- ========== FLIGHTS ========== -->
+  <section class="tab-panel" id="tab-flights">
+    <div class="section-head">
+      <div class="sh-left">
+        <h2>Lentotehtävät</h2>
+      </div>
+      <div class="sh-right">
+        <span class="badge-offline" id="assigned-cache-badge" style="display:none;">OFFLINE</span>
+        <div class="view-toggle" id="flights-view-toggle">
+          <button class="vt-btn active" data-view="table" onclick="setFlightsView('table')">
+            <span class="vt-icon">☰</span><span>Taulukko</span>
+          </button>
+          <button class="vt-btn" data-view="week" onclick="setFlightsView('week')">
+            <span class="vt-icon">▦</span><span>Viikko</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <!-- Taulukon työkalurivi -->
+      <div class="toolbar-content" id="toolbar-table">
+        <div class="toolbar-search">
+          <span class="search-icon">⌕</span>
+          <input type="text" id="assigned-search-text"
+                placeholder="Hae lentoa, reittiä, rekisteriä…"
+                oninput="filterAssignedFlightsTable()">
+        </div>
+        <div class="toolbar-dates">
+          <input type="date" id="assigned-date-from">
+          <span class="date-sep">→</span>
+          <input type="date" id="assigned-date-to">
+        </div>
+        <button class="btn-primary" onclick="loadAssignedFlights(true, true)">Hae</button>
+      </div>
+
+      <!-- Viikkonäkymän työkalurivi -->
+      <div class="toolbar-content" id="toolbar-week" style="display:none;">
+        <button class="wk-nav-btn" onclick="weekViewPrev()" title="Edellinen viikko">←</button>
+        <div class="wk-label" id="wk-label">–</div>
+        <button class="wk-nav-btn" onclick="weekViewNext()" title="Seuraava viikko">→</button>
+        <button class="wk-today-btn" onclick="weekViewToday()">Tänään</button>
+      </div>
+    </div>
+
+    <!-- Taulukkonäkymä -->
+    <div id="assigned-flights-container" class="table-wrap">
+      <div class="empty">Ei dataa. Paina <strong>Hae</strong>.</div>
+    </div>
+
+    <!-- Viikkonäkymä -->
+    <div id="week-view-container" class="week-view" style="display:none;"></div>
+  </section>
+
+  <!-- ========== BRIEFING ========== -->
+  <section class="tab-panel" id="tab-briefing">
+    <div class="section-head">
+      <h2>Lennon briefing</h2>
+      <div class="section-actions">
+        <button class="btn-ghost" onclick="renderBriefing()">
+          ⟳ Päivitä
+        </button>
+        <button class="btn-ghost" onclick="openBriefingOFP()">
+          ✈ Avaa OFP
+        </button>
+      </div>
+    </div>
+
+    <div id="briefing-container">
+      <div class="empty">Ladataan…</div>
+    </div>
+  </section>
+
+  <!-- ========== FRIENDS ========== -->
+  <section class="tab-panel" id="tab-friends">
+    <div class="section-head">
+      <h2>Kaverit</h2>
+    </div>
+    <div id="friends-container">
+      <div class="empty">Ladataan…</div>
+    </div>
+  </section>
+
+  <!-- ========== LOGBOOK ========== -->
+  <section class="tab-panel" id="tab-logbook">
+    <div class="section-head">
+      <h2>Lokikirja <span class="muted">· EASA FCL.050</span></h2>
+      <span id="chain-status" class="chain-status" style="display:none;"></span>
+      <div class="section-actions">
+        <button class="btn-ghost" onclick="signAllFlightsForPilot()"
+                title="Allekirjoita kaikki lennot samalla kapteenilla">
+          ✍️ Allekirjoita kaikki
+        </button>
+        <button class="btn-ghost" onclick="importLogbookFromCSV()">📥 Tuo CSV</button>
+        <button class="btn-ghost" onclick="showExportDialog()">⬇ Vie</button>
+        <button class="btn-ghost" onclick="saveLogbookPDF(window._lbEntries || [])">
+          ⎙ Tallenna PDF
+        </button>
+      </div>
+    </div>
+
+    <div id="logbook-container" class="table-wrap">
+      <div class="empty">
+        Ei kirjauksia. Tuo lentoja <strong>Lennot</strong>-välilehdeltä tai synkkaa rosteri.
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== WEATHER ========== -->
+  <section class="tab-panel" id="tab-weather">
+    <div class="section-head">
+      <h2>Sää &amp; NOTAMit</h2>
+    </div>
+
+    <div class="card">
+      <div class="card-label">METAR / TAF</div>
+      <div class="row-flex">
+        <input type="text" id="wx-icao" placeholder="ICAO (esim. UAAA)"
+               maxlength="4" class="mono" style="text-transform:uppercase;">
+        <button class="btn-primary" onclick="loadWeatherForStation()">Hae</button>
+      </div>
+      <pre id="wx-output" class="wx-output">–</pre>
+    </div>
+
+    <div class="card">
+      <div class="card-label">NOTAM</div>
+      <pre id="notam-output" class="wx-output">–</pre>
+    </div>
+  </section>
+
+  
+
+  <!-- ========== SETTINGS ========== -->
+  <section class="tab-panel" id="tab-settings">
+    <div class="section-head"><h2>Asetukset</h2></div>
+
+    <div class="card">
+      <div class="card-label">SKYPLAN ACCESS TOKEN</div>
+      <textarea id="skyplan_token" class="mono" rows="4"
+                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"></textarea>
+      <div class="row-flex end">
+        <button class="btn-primary" onclick="saveTokenFromSettings()">Tallenna</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">AUTOROUTER API KEY</div>
+      <input type="text" id="autorouter_key" class="mono"
+            placeholder="eyJhbGciOiJSUzI1NiIs...">
+      <div class="row-flex end">
+        <button class="btn-primary" onclick="saveAutoRouterKey()">Tallenna</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">KÄYTTÄJÄ</div>
+      <div class="kv"><span>Nimi</span><span id="settings-user">–</span></div>
+      <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
+      <div class="kv"><span>Versio</span><span>1.0.0 · iPad</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">OFFLINE-VÄLIMUISTI</div>
+      <div class="kv"><span>Roster</span><span id="cache-roster-stat">–</span></div>
+      <div class="kv"><span>OFP:t</span><span id="cache-ofp-stat">–</span></div>
+      <div class="kv"><span>Lokikirja</span><span id="cache-lb-stat">–</span></div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ Bottom tab bar ============ -->
+<nav class="tabbar">
+  <button class="tab-btn active" data-tab="home">
+    <span class="tab-icon">◉</span><span>Koti</span>
+  </button>
+  <button class="tab-btn" data-tab="flights">
+    <span class="tab-icon">✈</span><span>Lennot</span>
+  </button>
+  <button class="tab-btn" data-tab="logbook">
+    <span class="tab-icon">▤</span><span>Lokikirja</span>
+  </button>
+  <button class="tab-btn" data-tab="briefing">
+    <span class="tab-icon">📋</span><span>Briefing</span>
+  </button>
+  <button class="tab-btn" data-tab="friends">
+    <span class="tab-icon">👥</span><span>Kaverit</span>
+  </button>
+  <button class="tab-btn" data-tab="weather">
+    <span class="tab-icon">☁</span><span>Sää</span>
+  </button>
+  <button class="tab-btn" data-tab="settings">
+    <span class="tab-icon">⚙</span><span>Asetukset</span>
+  </button>
+</nav>
+
+<!-- ============ Global loader ============ -->
+<div id="global-loader" class="global-loader" style="display:none;">
+  <div class="loader-inner">
+    <div class="loader-spinner"><span></span><span></span><span></span></div>
+    <div class="loader-title" id="loader-title">Loading…</div>
+    <div class="loader-sub" id="loader-sub"></div>
+  </div>
+</div>
+
+<!-- ============ Toasts ============ -->
+<div id="toast-container" class="toast-container"></div>
+
+<!-- ============ UI glue (missing pieces referenced by app.js) ============ -->
+<script>
+/* ------------------------------------------------------------------
+ *  Flight Deck · UI glue
+ * Täydentää app.js:n viittaamat funktiot joita ei ole määritelty:
+ *   - showModalLoader / hideModalLoader
+ *   - showToast
+ *   - decodeJWT
+ *   - tab-navigaatio, kello, online-tila
+ *   - skyplan_token kentän esitäyttö
+ * ------------------------------------------------------------------ */
+
+/* ---- Loader ---- */
+function showModalLoader(title, sub) {
+  const el = document.getElementById('global-loader');
+  if (!el) return;
+  document.getElementById('loader-title').innerHTML = title || 'Loading…';
+  document.getElementById('loader-sub').innerHTML = sub || '';
+  el.style.display = 'flex';
+  requestAnimationFrame(() => el.classList.add('visible'));
+}
+function hideModalLoader() {
+  const el = document.getElementById('global-loader');
+  if (!el) return;
+  el.classList.remove('visible');
+  setTimeout(() => { el.style.display = 'none'; }, 220);
+}
+window.showModalLoader = showModalLoader;
+window.hideModalLoader = hideModalLoader;
+
+/* ---- Toast ---- */
+function showToast(message, type = 'info', duration = 3200) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  const icons = { success: '✓', warning: '!', error: '✕', info: 'i' };
+  toast.innerHTML = `
+    <span class="toast-icon">${icons[type] || 'i'}</span>
+    <span class="toast-msg"></span>
+  `;
+  toast.querySelector('.toast-msg').textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('visible'));
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+window.showToast = showToast;
+
+/* ---- JWT decode ---- */
+function decodeJWT(token) {
+  if (!token || typeof token !== 'string') return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
+    const json = decodeURIComponent(
+      atob(padded).split('').map(c =>
+        '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+      ).join('')
+    );
+    return JSON.parse(json);
+  } catch (e) {
+    console.warn('decodeJWT failed:', e);
+    return null;
+  }
+}
+window.decodeJWT = decodeJWT;
+
+/* ---- Tabs ---- */
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === `tab-${tabId}`);
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tabId);
+  });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  // Lazy-load content per tab
+  if (tabId === 'flights') {
+    const c = document.getElementById('assigned-flights-container');
+    if (c && c.querySelector('.empty')) loadAssignedFlights(false, false);
+  }
+  if (tabId === 'settings') hydrateSettingsTab();
+}
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+});
+
+/* ---- Live clock ---- */
+function tickClock() {
+  const el = document.getElementById('live-clock');
+  if (!el) return;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  el.textContent = `${hh}:${mm}`;
+}
+setInterval(tickClock, 1000); tickClock();
+
+/* ---- Online / offline indicator ---- */
+function updateConnStatus() {
+  const wrap = document.getElementById('conn-status');
+  const label = document.getElementById('conn-label');
+  if (!wrap || !label) return;
+  const online = navigator.onLine;
+  wrap.classList.toggle('online', online);
+  wrap.classList.toggle('offline', !online);
+  label.textContent = online ? 'Online' : 'Offline';
+}
+window.addEventListener('online', updateConnStatus);
+window.addEventListener('offline', updateConnStatus);
+updateConnStatus();
+
+
+/* --- Käynnistys --- */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Viive, jotta hydrateUser() ehtii lukea JWT:n
+    setTimeout(() => autoLoadMonthRoster().catch(() => {}), 1200);
+  });
+} else {
+  setTimeout(() => autoLoadMonthRoster().catch(() => {}), 1200);
+}
+
+/* ---- Greeting & user identity from JWT ---- */
+async function hydrateUser() {
+  const token = (typeof getValidSkyplanToken === 'function')
+    ? await getValidSkyplanToken().catch(() => null)
+    : localStorage.getItem('skyplan_token');
+  if (!token) return;
+  const payload = decodeJWT(token) || {};
+  const first = payload.given_name || payload.FirstName || payload.firstName || '';
+  const last  = payload.family_name || payload.LastName  || payload.lastName  || '';
+  const empId = payload.employeeid || payload.EmployeeID || payload.employeeId
+             || payload.nameid || payload.sub || '';
+  const name = [first, last].filter(Boolean).join(' ') || 'Kapteeni';
+  const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+  set('user-name', name);
+  set('settings-user', name);
+  set('settings-empid', empId || '–');
+}
+
+/* ---- Settings tab hydrators ---- */
+function hydrateSettingsTab() {
+  const tokenInput = document.getElementById('skyplan_token');
+  if (tokenInput && !tokenInput.value) {
+    tokenInput.value = localStorage.getItem('skyplan_token') || '';
+  }
+  try {
+    const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    set('cache-roster-stat', `${Array.isArray(roster) ? roster.length : 0} lentoa`);
+  } catch (e) {}
+}
+function saveTokenFromSettings() {
+  const input = document.getElementById('skyplan_token');
+  if (!input) return;
+  const t = (input.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
+  if (!t) { showToast('Anna kelvollinen token.', 'warning'); return; }
+  try {
+    localStorage.setItem('skyplan_token', t);
+    showToast('Token tallennettu.', 'success');
+    hydrateUser();
+  } catch (e) {
+    showToast('Tokenin tallennus epäonnistui.', 'error');
+  }
+}
+window.saveTokenFromSettings = saveTokenFromSettings;
+
+  if (typeof pdfjsLib !== 'undefined') {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  }
+
+/* ---- Boot ---- */
+document.addEventListener('DOMContentLoaded', () => {
+  hydrateUser();
+  hydrateSettingsTab();
+  // Esitäytä token-kenttä asetuksissa
+  const t = localStorage.getItem('skyplan_token');
+  const input = document.getElementById('skyplan_token');
+  if (t && input) input.value = t;
+});
+</script>
+</body>
+</html>
