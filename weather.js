@@ -379,11 +379,6 @@ async function renderHomeDashboard() {
   const { current, next } = _findCurrentAndNextFlights();
   const flight = current || next;
 
-  // Aktiivisen lennon kortti (säilyy)
-  if (typeof renderActiveFlightCard === 'function') {
-    renderActiveFlightCard().catch(() => {});
-  }
-
   const cardEl = document.getElementById('home-map-card');
   const mapEl = document.getElementById('fc-map');
   const overlayEl = document.getElementById('home-map-overlay');
