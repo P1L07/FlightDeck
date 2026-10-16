@@ -198,12 +198,6 @@ window.initAirportDB = initAirportDB;
   };
 })();
 
-/* ---------- Käynnistä automaattisesti ---------- */
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => setTimeout(initAirportDB, 1500));
-} else {
-  setTimeout(initAirportDB, 1500);
-}
 
 /* ==============================================================
  * Kentän nimen haku — OurAirports + manuaalinen fallback
@@ -277,6 +271,7 @@ const _FIR_COORDS = {
   ZWYN: { lat: 43.956, lon:  81.330, name: 'Yining',        type: 'medium_airport' },
   ZYJM: { lat: 46.843, lon: 130.465, name: 'Jiamusi',       type: 'medium_airport' },
   ZYTL: { lat: 38.966, lon: 121.539, name: 'Dalian',        type: 'medium_airport' },
+  RKTU: { lat: 36.716, lon: 127.499, name: 'Cheongju',      type: 'medium_airport' },
 
   // Legacy-koodit (vanhat kazakstanilaiset)
   UAAL: { lat: 43.352, lon:  77.040, name: 'Almaty',        type: 'legacy' },

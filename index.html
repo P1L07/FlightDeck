@@ -947,19 +947,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // 7. Kotisivun kartta
+    // 7. Kotisivun kartta — käynnistä taustalla, älä odota
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
   if (typeof renderHomeDashboard === 'function') {
-    try {
-      await Promise.race([
-        renderHomeDashboard(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
-      ]);
-      boot?.setStep('map', 'done');
-    } catch (e) {
-      console.warn('[Boot] Home dashboard epäonnistui:', e);
-      boot?.setStep('map', 'done');
-    }
+    renderHomeDashboard()
+      .then(() => boot?.setStep('map', 'done'))
+      .catch((e) => {
+        console.warn('[Boot] Home dashboard epäonnistui:', e);
+        boot?.setStep('map', 'done');
+      });
   } else {
     boot?.setStep('map', 'done');
   }

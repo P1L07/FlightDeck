@@ -834,10 +834,16 @@ window.addEventListener('online', () => {
   setTimeout(() => _initHomeDashboard('online'), 1500);
 });
 
-// 3) Aja aina kun klikataan Home-tab
+// 3) Aja kun klikataan Home-tab — vain jos kartta on tyhjä
 document.addEventListener('click', (ev) => {
   const btn = ev.target.closest('.tab-btn[data-tab="home"]');
-  if (btn) setTimeout(() => _initHomeDashboard('tab-click'), 50);
+  if (!btn) return;
+  setTimeout(() => {
+    const mapEl = document.getElementById('fc-map');
+    if (mapEl && !mapEl.querySelector('svg')) {
+      _initHomeDashboard('tab-click').catch(() => {});
+    }
+  }, 50);
 });
 
 // 4) Aja kun roster on synkattu (loadAssignedFlights wrapper)
@@ -856,9 +862,15 @@ document.addEventListener('DOMContentLoaded', () => {
   obs.observe(flightsContainer, { childList: true, subtree: true });
 });
 
-// 5) Turvaverkko: yritä uudelleen 5 s ja 15 s kuluttua
-setTimeout(() => _initHomeDashboard('retry-5s'), 5000);
-setTimeout(() => _initHomeDashboard('retry-15s'), 15000);
+
+// 5) Turvaverkko: vain jos kartta ei ole vielä piirtynyt
+setTimeout(() => {
+  const mapEl = document.getElementById('fc-map');
+  if (mapEl && !mapEl.querySelector('svg')) {
+    console.log('[Home] Turvaverkko: kartta ei piirtynyt, yritetään uudelleen');
+    _initHomeDashboard('retry-fallback').catch(() => {});
+  }
+}, 8000);
 
 /* ==============================================================
  * Täytä MIN BLOCK FUEL -kenttä kaikille korteille joiden
