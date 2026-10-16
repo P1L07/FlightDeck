@@ -125,7 +125,6 @@ async function _getTripOFPData(fid) {
 
     return parsed;
   } catch (e) {
-    console.warn('[TripInfo] OFP parse failed:', e.message);
     return null;
   }
 }

@@ -47,26 +47,88 @@ async function dbInit() {
       };
     });
 
-    // Lue kaikki muistiin
-    _logbookMemory = await _dbReadAllFromIDB();
+    // Lue kaikki lähteet
+    const fromIDB = await _dbReadAllFromIDB();
 
-    // Jos IDB on tyhjä → migroi localStoragesta
-    if (_logbookMemory.length === 0) {
-      const legacy = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
-      if (legacy.length > 0) {
-        console.log(`[DB] Migroidaan ${legacy.length} kirjausta localStorage → IndexedDB`);
-        await _dbReplaceAllToIDB(legacy);
-        _logbookMemory = legacy;
+    let fromLS = [];
+    try {
+      fromLS = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
+    } catch (e) {}
+
+    // Etsi suurin backup localStorage:sta
+    let fromBackup = [];
+    let backupKey = null;
+    const backupKeys = [
+      'easa_logbook_backup_before_nightrecalc',
+      'easa_logbook_backup_before_sync',
+      'easa_logbook_autobackup_v1'
+    ];
+    for (const key of backupKeys) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        const arr = data.entries || data;
+        if (Array.isArray(arr) && arr.length > fromBackup.length) {
+          fromBackup = arr;
+          backupKey = key;
+        }
+      } catch (e) {}
+    }
+
+    console.log(`[DB] Lähteet: IDB=${fromIDB.length} · LS=${fromLS.length} · backup=${fromBackup.length} (${backupKey || '–'})`);
+
+    // ⚠️ VALITSE SUURIN — älä koskaan ylikirjoita suurempaa pienemmällä
+    const candidates = [
+      { src: 'idb',    list: fromIDB },
+      { src: 'ls',     list: fromLS },
+      { src: 'backup', list: fromBackup }
+    ];
+    candidates.sort((a, b) => b.list.length - a.list.length);
+
+    const winner = candidates[0];
+    console.log(`[DB] Valittu lähde: ${winner.src} (${winner.list.length} kirjausta)`);
+
+    // Jos voittaja ei ole IDB → migroi IDB:hen
+    if (winner.src !== 'idb' && winner.list.length > 0) {
+      console.log(`[DB] Migroidaan ${winner.src} → IndexedDB (${winner.list.length} kirjausta)`);
+
+      // Merkintä migraatiosta
+      try {
+        localStorage.setItem('easa_logbook_migration_meta',
+          JSON.stringify({
+            at: new Date().toISOString(),
+            from: winner.src,
+            count: winner.list.length,
+            prevIDBCount: fromIDB.length
+          })
+        );
+      } catch (e) {}
+
+      await _dbReplaceAllToIDB(winner.list);
+
+      // Päivitä myös localStorage-peili jos backup oli suurempi
+      if (winner.src === 'backup' && fromLS.length < winner.list.length) {
+        try {
+          localStorage.setItem('easa_logbook_v1', JSON.stringify(winner.list));
+        } catch (e) {
+          console.warn('[DB] localStorage-peili täynnä — käytetään vain IDB');
+        }
       }
     }
 
+    _logbookMemory = winner.list;
     _dbReady = true;
     console.log(`[DB] Valmis — ${_logbookMemory.length} kirjausta muistissa`);
     return _logbookMemory;
   } catch (e) {
     console.error('[DB] Init epäonnistui:', e);
-    // Fallback localStorageen
-    _logbookMemory = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
+    // Viimeinen fallback: yritä lukea jokin lähde
+    try {
+      const ls = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
+      if (ls.length) { _logbookMemory = ls; _dbReady = true; return ls; }
+    } catch (e2) {}
+    _logbookMemory = [];
     _dbReady = true;
     return _logbookMemory;
   }
@@ -163,6 +225,24 @@ function dbReplaceAll(list) {
   _dbReplaceAllToIDB(_logbookMemory).catch(() => {});
   _mirrorToLocalStorage();
 }
+
+/* Estä ylikirjoitus: jos uusi data on pienempi kuin 50% vanhasta → vahvista */
+function dbReplaceAllSafe(newList, options = {}) {
+  const oldCount = _logbookMemory.length;
+  const newCount = Array.isArray(newList) ? newList.length : 0;
+
+  // Jos uusi on paljon pienempi → kysy
+  if (!options.force && oldCount > 10 && newCount < oldCount * 0.5) {
+    console.warn(`[DB] ⚠️ Ylikirjoitus: ${oldCount} → ${newCount}`);
+    if (!confirm(`Lokikirjassa on ${oldCount} kirjausta, mutta uusi data sisältää vain ${newCount}.\n\nHaluatko varmasti ylikirjoittaa?`)) {
+      return false;
+    }
+  }
+
+  dbReplaceAll(newList);
+  return true;
+}
+window.dbReplaceAllSafe = dbReplaceAllSafe;
 
 function dbClearAll() {
   _logbookMemory = [];

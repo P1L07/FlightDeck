@@ -16,12 +16,39 @@ function _lbReadAll() {
 }
 
 function _lbWriteAll(list) {
-  if (typeof dbReplaceAll === 'function' && window.dbReplaceAll) {
-    dbReplaceAll(list);
+  if (typeof dbReplaceAllSafe === 'function' && window.dbReplaceAllSafe) {
+    dbReplaceAllSafe(list);
     return;
   }
   try { localStorage.setItem(LOGBOOK_STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
 }
+
+const CERT_SIGNATURE_KEY = '_cert_signature_v1';
+
+function getCertificationSignature() {
+  try {
+    const raw = localStorage.getItem(CERT_SIGNATURE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+function setCertificationSignature(dataUrl, license = '') {
+  try {
+    localStorage.setItem(CERT_SIGNATURE_KEY, JSON.stringify({
+      dataUrl,
+      license,
+      savedAt: new Date().toISOString()
+    }));
+  } catch (e) {}
+}
+
+function clearCertificationSignature() {
+  try { localStorage.removeItem(CERT_SIGNATURE_KEY); } catch (e) {}
+}
+window.getCertificationSignature = getCertificationSignature;
+window.setCertificationSignature = setCertificationSignature;
+window.clearCertificationSignature = clearCertificationSignature;
 
 function getLogbookEntries() { return _lbReadAll(); }
 function getLogbookEntry(id) { return _lbReadAll().find(e => e.id === id) || null; }
@@ -1724,7 +1751,7 @@ function promptLogbookSignature(entryId) {
             Pilot's license number
           </label>
           <input type="text" id="lb-license" 
-                 placeholder="esim. KZ-12345"
+                 placeholder="esim. FI.FCL.111"
                  value="${savedLicense || ''}"
                  style="width:100%; padding:10px 12px; border-radius:8px;
                         background:var(--input); color:var(--text);
@@ -1859,7 +1886,7 @@ function promptLogbookSignature(entryId) {
   });
 }
 
-async function generateLogbookPDF(entries) {
+async function generateLogbookPDF(entries, certification = null) {
   const { PDFDocument, StandardFonts } = PDFLib;
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -2011,19 +2038,47 @@ async function generateLogbookPDF(entries) {
       }
     }
 
-    // Certification-lohko
+       // Certification-lohko
     const certTopY = dataTopY - MAX_ROWS * ROW_H;
-    const certH = 60;
+    const certH = 70;
     p2.drawRectangle({
       x: remarksX, y: certTopY - certH, width: remarksW, height: certH,
       borderColor: black, borderWidth: 0.7
     });
+
     p2.drawText('I certify that the entries in this log are true.', {
-      x: remarksX + 6, y: certTopY - 16, size: 8, font, color: black
+      x: remarksX + 6, y: certTopY - 14, size: 8, font, color: black
     });
+
+    // Lupakirjanumero (jos annettu)
+    if (certification?.license) {
+      p2.drawText(`Lic. ${certification.license}`, {
+        x: remarksX + 6, y: certTopY - 26, size: 7, font: bold,
+        color: RGB(0.3, 0.3, 0.3)
+      });
+    }
+
     p2.drawText("Pilot's signature:", {
-      x: remarksX + 6, y: certTopY - 34, size: 8, font, color: black
+      x: remarksX + 6, y: certTopY - 40, size: 8, font, color: black
     });
+
+    // Certification-allekirjoituskuva
+    if (certification?.dataUrl) {
+      try {
+        const png = await pdf.embedPng(certification.dataUrl);
+        const maxW = remarksW - 20;
+        const maxH = 24;
+        const s = Math.min(maxW / png.width, maxH / png.height);
+        p2.drawImage(png, {
+          x: remarksX + 14,
+          y: certTopY - certH + 4,
+          width: png.width * s,
+          height: png.height * s
+        });
+      } catch (err) {
+        console.warn('[PDF] certification signature embed failed:', err);
+      }
+    }
 
     runningPrevious = totalSum;
   }
@@ -2984,10 +3039,6 @@ function showExportDialog() {
 }
 window.showExportDialog = showExportDialog;
 
-/**
- * Uusi ensisijainen lokikirjan tallennusfunktio.
- * Korvaa vanhan `printLogbook`-kutsun UI:sta.
- */
 async function saveLogbookPDF(entries, previousTotals, options = {}) {
   const list = Array.isArray(entries) ? entries : (window._lbEntries || []);
   if (!list.length) {
@@ -2997,9 +3048,15 @@ async function saveLogbookPDF(entries, previousTotals, options = {}) {
     return;
   }
 
-  const totals = computeTotals(list, previousTotals || {
-    thisPage: '0:00', previous: '0:00'
-  });
+  // 1. Kysy allekirjoitus (tai käytä tallennettua)
+  const cert = await promptCertificationSignature();
+
+  if (!cert || !cert.dataUrl) {
+    if (typeof showToast === 'function') {
+      showToast('Allekirjoitus peruutettu.', 'info');
+    }
+    return;
+  }
 
   if (typeof showModalLoader === 'function') {
     showModalLoader('Valmistellaan PDF…',
@@ -3007,9 +3064,8 @@ async function saveLogbookPDF(entries, previousTotals, options = {}) {
   }
 
   try {
-    const bytes = await generateLogbookPDF(list, totals);
+    const bytes = await generateLogbookPDF(list, cert);
 
-    // Ehdotettu tiedostonimi: EASA_Logbook_2026-10-13.pdf
     const today = new Date();
     const stamp = `${today.getFullYear()}-${
       String(today.getMonth() + 1).padStart(2, '0')}-${
@@ -3024,13 +3080,12 @@ async function saveLogbookPDF(entries, previousTotals, options = {}) {
       const msg = {
         shared:     'PDF avattu jakovalikkoon — valitse "Tallenna tiedostoon".',
         downloaded: 'PDF ladattu laitteellesi.',
-        opened:     'PDF avattu uudessa välilehdessä — tallenna se Files-sovelluksella.',
+        opened:     'PDF avattu uudessa välilehdessä.',
         cancelled:  null,
         failed:     'PDF:n tallennus epäonnistui.'
       }[result];
       if (msg) {
-        const type = result === 'failed' ? 'error' : 'success';
-        showToast(msg, type, 4000);
+        showToast(msg, result === 'failed' ? 'error' : 'success', 4000);
       }
     }
     return result;
@@ -3051,11 +3106,161 @@ async function saveLogbookPDF(entries, previousTotals, options = {}) {
 }
 window.saveLogbookPDF = saveLogbookPDF;
 
-/* --- Päivitä printLogbook käyttämään uutta tallennusta --- */
 async function printLogbook(entries, previousTotals) {
   return saveLogbookPDF(entries, previousTotals, { filename: 'EASA_Logbook' });
 }
 window.printLogbook = printLogbook;
+
+/* ==============================================================
+ * CERTIFICATION-ALLEKIRJOITUS · popup ennen PDF:ää
+ * ============================================================== */
+async function promptCertificationSignature() {
+  const saved = getCertificationSignature();
+
+  return new Promise((resolve) => {
+    const bodyHTML = `
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div style="font-size:13px; color:var(--dim); line-height:1.5;">
+          Allekirjoituksesi piirretään PDF:n alaosaan kohtaan
+          <strong style="color:var(--text);">"I certify that the entries in this log are true."</strong>
+        </div>
+
+        <div>
+          <label style="display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:6px;">
+            Pilot's license number
+          </label>
+          <input type="text" id="cert-license"
+                 placeholder="esim. FI.FCL.1111"
+                 value="${saved?.license ? String(saved.license).replace(/"/g, '&quot;') : ''}"
+                 style="width:100%; padding:10px 12px; border-radius:8px;
+                        background:var(--input); color:var(--text);
+                        border:1px solid var(--border); font-size:14px;
+                        font-family:var(--font-mono); box-sizing:border-box;">
+        </div>
+
+        <div>
+          <label style="display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:6px;">
+            Pilot's signature
+          </label>
+          <canvas id="cert-sig-pad" width="600" height="160"
+              style="width:100%; height:160px; background:#fff; border:1px solid var(--border);
+                     border-radius:8px; touch-action:none;"></canvas>
+          <div style="display:flex; justify-content:space-between; margin-top:6px;">
+            <span style="font-size:11px; color:var(--faint);">
+              Piirrä sormella tai Apple Pencilillä
+            </span>
+            <button type="button" id="cert-sig-clear"
+                style="font-size:11px; background:transparent;
+                       border:1px solid var(--border); color:var(--text);
+                       padding:4px 10px; border-radius:6px; cursor:pointer;">
+              Clear signature
+            </button>
+          </div>
+        </div>
+
+        ${saved ? `
+          <div style="font-size:11px; color:var(--faint); padding:8px 12px;
+                      background:rgba(0,194,255,0.04); border-radius:6px;
+                      border:1px solid var(--border);">
+            Aiempi allekirjoitus tallessa (${new Date(saved.savedAt).toLocaleString('fi-FI')}).
+            Voit piirtää uuden tai peruuttaa ja käyttää vanhaa.
+          </div>
+        ` : ''}
+      </div>
+    `;
+
+    createModal({
+      title: 'Certification',
+      icon: '✍️',
+      bodyHTML,
+      confirmText: 'Luo PDF',
+      cancelText: 'Peruuta',
+      maxWidth: '640px',
+      compact: true,
+      onConfirm: () => {
+        const canvas = document.getElementById('cert-sig-pad');
+        const license = (document.getElementById('cert-license')?.value || '').trim();
+        const dataUrl = canvas.toDataURL('image/png');
+
+        // Onko tyhjä?
+        const blank = document.createElement('canvas');
+        blank.width = canvas.width;
+        blank.height = canvas.height;
+        const isBlank = dataUrl === blank.toDataURL('image/png');
+
+        if (isBlank) {
+          // Jos aiempi on olemassa, käytä sitä
+          if (saved?.dataUrl) {
+            resolve({ dataUrl: saved.dataUrl, license: license || saved.license || '' });
+            return;
+          }
+          if (typeof showToast === 'function') {
+            showToast('Piirrä allekirjoitus ennen PDF:n luontia.', 'warning');
+          }
+          return false;   // estä modaalin sulkeutuminen
+        }
+
+        // Tallenna uusi
+        setCertificationSignature(dataUrl, license);
+        resolve({ dataUrl, license });
+      },
+      onCancel: () => resolve(null)
+    });
+
+    // Piirto canvas
+    requestAnimationFrame(() => {
+      const canvas = document.getElementById('cert-sig-pad');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#000';
+
+      // Lataa aiempi allekirjoitus jos on
+      if (saved?.dataUrl) {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        };
+        img.src = saved.dataUrl;
+      }
+
+      let drawing = false;
+      let last = null;
+
+      const pos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const p = e.touches ? e.touches[0] : e;
+        return {
+          x: (p.clientX - r.left) * canvas.width / r.width,
+          y: (p.clientY - r.top) * canvas.height / r.height
+        };
+      };
+      const down = (e) => { drawing = true; last = pos(e); e.preventDefault(); };
+      const move = (e) => {
+        if (!drawing) return;
+        const p = pos(e);
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+        last = p;
+        e.preventDefault();
+      };
+      const up = () => { drawing = false; };
+
+      canvas.addEventListener('pointerdown', down);
+      canvas.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+
+      const clearBtn = document.getElementById('cert-sig-clear');
+      if (clearBtn) {
+        clearBtn.onclick = () => ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    });
+  });
+}
+window.promptCertificationSignature = promptCertificationSignature;
 
 window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tailNumber = '') {
         let pdfUrl = null;
@@ -4802,7 +5007,7 @@ async function _promptSignAllModal(data) {
             Pilot's license number
           </label>
           <input type="text" id="lb-license" 
-                 placeholder="esim. KZ-12345"
+                 placeholder="esim. FI.FCL.1111"
                  value="${_esc(savedLicense || '')}"
                  style="width:100%; padding:10px 12px; border-radius:8px;
                         background:var(--input); color:var(--text);

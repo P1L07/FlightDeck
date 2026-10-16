@@ -334,6 +334,25 @@
 </div>
 
 <div class="card">
+  <div class="card-label">CERTIFICATION-ALLEKIRJOITUS</div>
+  <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+    Allekirjoitus joka piirretään lokikirjan PDF:ään.
+    Kysytään aina ennen PDF:n luontia, mutta muistetaan seuraavalla kerralla.
+  </div>
+  <div id="cert-sig-status" style="font-size:12px; color:var(--dim); margin-bottom:12px;">
+    Ei tallennettua allekirjoitusta
+  </div>
+  <div class="row-flex end">
+    <button class="btn-ghost" onclick="clearCertificationSignature(); updateCertSigStatus();">
+      Poista allekirjoitus
+    </button>
+    <button class="btn-primary" onclick="promptCertificationSignature()">
+      ✍️ Piirrä allekirjoitus
+    </button>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-label">PÄIVITYS</div>
   <div style="font-size:12.5px; color:var(--dim); line-height:1.5; margin-bottom:12px;">
     Jos sovellus näyttää vanhaa versiota, pakota päivitys.
@@ -558,6 +577,21 @@ async function hydrateUser() {
   set('settings-empid', empId || '–');
 }
 
+function updateCertSigStatus() {
+  const el = document.getElementById('cert-sig-status');
+  if (!el) return;
+  const saved = getCertificationSignature();
+  if (!saved) {
+    el.innerHTML = '<span style="color:var(--dim);">Ei tallennettua allekirjoitusta</span>';
+    return;
+  }
+  const when = new Date(saved.savedAt).toLocaleString('fi-FI');
+  el.innerHTML = `<span style="color:var(--success);">✓ Allekirjoitus tallessa</span>
+    · ${when}
+    ${saved.license ? `· <span class="mono">${saved.license}</span>` : ''}`;
+}
+window.updateCertSigStatus = updateCertSigStatus;
+
 /* ---- Settings tab hydrators ---- */
 function hydrateSettingsTab() {
   const tokenInput = document.getElementById('skyplan_token');
@@ -565,6 +599,7 @@ function hydrateSettingsTab() {
     tokenInput.value = localStorage.getItem('skyplan_token') || '';
   }
   try {
+    updateCertSigStatus();
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('cache-roster-stat', `${Array.isArray(roster) ? roster.length : 0} lentoa`);
@@ -573,6 +608,7 @@ function hydrateSettingsTab() {
     setV('settings-build', window.APP_BUILD || '–');
   } catch (e) {}
 }
+
 function saveTokenFromSettings() {
   const input = document.getElementById('skyplan_token');
   if (!input) return;
