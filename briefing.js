@@ -259,10 +259,14 @@ async function renderBriefing() {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-label">NOTAM</div>
-      <div style="padding:18px; text-align:center; color:var(--dim); font-size:12px;">
-        NOTAM-integraatio tulossa myöhemmin.
+    <div class="card" style="padding:14px 16px;">
+      <div id="bf-notam-map" style="width:100%; height:280px; border-radius:12px;
+          background:radial-gradient(ellipse at center, rgba(0,30,60,0.4) 0%, transparent 70%);
+          overflow:hidden; position:relative; touch-action:none;">
+        <div style="height:100%; display:flex; align-items:center; justify-content:center;
+                    color:var(--dim); font-size:12px;">
+          Ladataan..
+        </div>
       </div>
     </div>
 
@@ -301,6 +305,12 @@ async function renderBriefing() {
   // Lataa Trip Info
   if (typeof renderTripInfoCard === 'function') {
     renderTripInfoCard('bf-tripinfo', f).catch(() => {});
+  }
+  // NOTAM-kartta
+  if (typeof _bfLoadNotamMap === 'function') {
+    _bfLoadNotamMap(f, flightId).catch(err => {
+      console.warn('[Briefing] NOTAM-map epäonnistui:', err);
+    });
   }
 }
 window.renderBriefing = renderBriefing;
@@ -566,3 +576,71 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(renderBriefing, 300);
   }
 });
+
+/* ==============================================================
+ * NOTAM-KARTTA · Briefing-sivun NOTAM-kartta
+ * ============================================================== */
+/* ==============================================================
+ * NOTAM-KARTTA · Briefing-sivun NOTAM-kartta
+ * ============================================================== */
+async function _bfLoadNotamMap(flight, flightId) {
+  const mapEl = document.getElementById('bf-notam-map');
+  if (!mapEl) return;
+
+  if (!flightId) {
+    mapEl.innerHTML = `
+      <div style="height:100%; display:flex; align-items:center; justify-content:center;
+                  color:var(--dim); font-size:12px;">
+        Ei Flight ID:tä — roster ei ole synkattu.
+      </div>`;
+    return;
+  }
+
+  try {
+    // Hae NOTAMit OFP:stä
+    const data = await parseOFPsForNotams(flightId);
+
+    // Varmista että flight-objekti on täysi (hae rosterista jos tarpeen)
+    let fullFlight = flight;
+    try {
+      const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+      const m = roster.find(x => String(x.ID || x.id || x.FlightID) === String(flightId));
+      if (m) fullFlight = { ...m, ...flight };
+    } catch (e) {}
+
+    // Rakenna kenttädata
+    const airports = buildAirportData(data.notams, fullFlight);
+    const valid = airports.filter(a => a.coords);
+
+    if (!valid.length) {
+      mapEl.innerHTML = `
+        <div style="height:100%; display:flex; flex-direction:column; align-items:center;
+                    justify-content:center; color:var(--dim); font-size:12px;
+                    text-align:center; padding:20px; gap:6px;">
+          <div style="font-size:24px;">📡</div>
+          <div>Ei NOTAM-kenttiä OFP:ssä.</div>
+        </div>`;
+      if (legendEl) legendEl.innerHTML = '';
+      return;
+    }
+
+    // ============ Esilataa METAR/TAF kaikille kentille ============
+    // (toimii taustalla, ei blokkaa renderöintiä)
+    _preloadWxForAirports(valid).catch(() => {});
+
+    // Renderöi kartta
+    if (typeof renderNotamMap === 'function') {
+      await renderNotamMap(mapEl, valid);
+    }
+
+  } catch (e) {
+    console.error('[Briefing] NOTAM-parse epäonnistui:', e);
+    mapEl.innerHTML = `
+      <div style="height:100%; display:flex; align-items:center; justify-content:center;
+                  color:var(--error); font-size:12px; text-align:center; padding:20px;">
+        NOTAM-haku epäonnistui:<br>
+        <span style="font-size:11px;">${String(e.message || '')}</span>
+      </div>`;
+  }
+}
+window._bfLoadNotamMap = _bfLoadNotamMap;

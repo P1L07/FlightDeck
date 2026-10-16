@@ -70,7 +70,6 @@ async function fetchAircraftDefects(tailNumber) {
       localStorage.setItem(ADD_CACHE_TIME_PREFIX + cleanTail, new Date().toISOString());
     } catch (e) {}
 
-    console.log(`[ADD] ${cleanTail}: ${defects.length} kohdetta`);
     return defects;
   } catch (e) {
     console.warn('[ADD] fetch failed:', e.message);

@@ -148,7 +148,6 @@ async function _getTripCrew(fid) {
         ? await getValidSkyplanToken().catch(() => null)
         : null;
       if (token) {
-        console.log('[TripCrew] Haetaan journey-log API:sta:', fid);
         log = await fetchJourneyLog(fid, token);
         if (log?.crewDuty?.length) {
           if (typeof _cacheJourneyLog === 'function') _cacheJourneyLog(fid, log);
@@ -173,16 +172,6 @@ async function _getTripCrew(fid) {
     const captain = parsed?.pic?.name || '';
     const fc = (parsed?.pic ? 1 : 0) + (parsed?.fo ? 1 : 0);
     const cc = (parsed?.ifs ? 1 : 0) + (parsed?.cabin?.length || 0);
-
-    console.log('[TripCrew] parseCrewFromJourneyLog:', {
-      captain,
-      fc, cc,
-      pic: parsed?.pic?.name,
-      fo: parsed?.fo?.name,
-      ifs: parsed?.ifs?.name,
-      cabinCount: parsed?.cabin?.length,
-      crewDutyLen: log.crewDuty.length
-    });
 
     return { captain, fc, cc, dhc: 0 };
   }

@@ -76,7 +76,6 @@ async function dbInit() {
       } catch (e) {}
     }
 
-    console.log(`[DB] Lähteet: IDB=${fromIDB.length} · LS=${fromLS.length} · backup=${fromBackup.length} (${backupKey || '–'})`);
 
     // ⚠️ VALITSE SUURIN — älä koskaan ylikirjoita suurempaa pienemmällä
     const candidates = [
@@ -87,7 +86,6 @@ async function dbInit() {
     candidates.sort((a, b) => b.list.length - a.list.length);
 
     const winner = candidates[0];
-    console.log(`[DB] Valittu lähde: ${winner.src} (${winner.list.length} kirjausta)`);
 
     // Jos voittaja ei ole IDB → migroi IDB:hen
     if (winner.src !== 'idb' && winner.list.length > 0) {
@@ -119,7 +117,6 @@ async function dbInit() {
 
     _logbookMemory = winner.list;
     _dbReady = true;
-    console.log(`[DB] Valmis — ${_logbookMemory.length} kirjausta muistissa`);
     return _logbookMemory;
   } catch (e) {
     console.error('[DB] Init epäonnistui:', e);

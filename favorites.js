@@ -167,12 +167,10 @@ const CREW_PRELOAD_MIN_INTERVAL = 30 * 60 * 1000;   // min 30 min välein
 
 async function preloadUpcomingCrews(reason = 'auto') {
   if (window._crewPreloadRunning) {
-    console.log(`[CrewPreload] Skip (${reason}): jo käynnissä`);
     return;
   }
 
   if (!navigator.onLine) {
-    console.log(`[CrewPreload] Skip (${reason}): offline`);
     return;
   }
 
@@ -183,7 +181,6 @@ async function preloadUpcomingCrews(reason = 'auto') {
   const lastRun = state.lastRun ? new Date(state.lastRun).getTime() : 0;
   if (Date.now() - lastRun < CREW_PRELOAD_MIN_INTERVAL && reason !== 'manual') {
     const mins = Math.round((Date.now() - lastRun) / 60000);
-    console.log(`[CrewPreload] Skip (${reason}): ${mins} min viime ajosta`);
     return;
   }
 
@@ -225,14 +222,12 @@ async function preloadUpcomingCrews(reason = 'auto') {
   });
 
   if (!candidates.length) {
-    console.log(`[CrewPreload] Kaikki tulevat lennot jo cachessa`);
     state.lastRun = new Date().toISOString();
     state.reason = reason;
     localStorage.setItem(CREW_PRELOAD_KEY, JSON.stringify(state));
     return;
   }
 
-  console.log(`[CrewPreload] Aloitetaan (${reason}): ${candidates.length} lentoa`);
   window._crewPreloadRunning = true;
 
   let loaded = 0, skipped = 0, errors = 0;
@@ -280,8 +275,6 @@ async function preloadUpcomingCrews(reason = 'auto') {
     state.reason = reason;
     state.lastStats = { loaded, skipped, errors, total: candidates.length };
     localStorage.setItem(CREW_PRELOAD_KEY, JSON.stringify(state));
-
-    console.log(`[CrewPreload] Valmis: +${loaded} uutta, ${skipped} ei vielä julkaistu, ${errors} virhettä`);
 
     // Jos ladattiin uusia → päivitä näkymiä
     if (loaded > 0) {

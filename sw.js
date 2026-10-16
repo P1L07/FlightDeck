@@ -17,6 +17,7 @@ const STATIC_ASSETS = [
   './index.html',
   './styles.css',
   './app.js',
+  './db.js',
   './LogBook.js',
   './activeflight.js',
   './audit.js',
@@ -30,7 +31,10 @@ const STATIC_ASSETS = [
   './tripinfo.js',
   './version.js',
   './weather.js',
-  './weekview.js'
+  './weekview.js',
+  './map.js',                                 
+  'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js',
+  'https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js'
 ];
 
 /* ---------------- Asennus ---------------- */

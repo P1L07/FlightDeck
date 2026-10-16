@@ -8,77 +8,98 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#060a15">
 <title>FlightDeck</title>
+
 <link rel="manifest" href="manifest.json">
-<link rel="icon" type="image/svg+xml" href="icon.svg">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="apple-touch-icon" sizes="152x152" href="apple-touch-icon.png">
 <link rel="apple-touch-icon" sizes="167x167" href="apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
 
-<!-- Versiotarkastus -->
-<script src="version.js"></script>
-
-<!-- Muisti -->
-<script src="db.js"></script> 
-
-<!-- PDF-lib logikirjan generointiin -->
+<!-- 1. Ulkoiset kirjastot -->
 <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-
-<!-- SunCalc yöajan laskentaan (valinnainen) -->
 <script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.min.js"></script>
-
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-
-<!-- TripInfo -->
-<script src="tripinfo.js"></script>
-
-<!-- NOTAMit -->
-<script src="notam.js"></script>
-
-<!-- Sää -->
-<script src="weather.js"></script>
-
-<!-- Lentokalenteri -->
-<script src="weekview.js"></script>
-
-<!-- ADD -->
-<script src="defects.js"></script> 
-
-<!-- Roster -->
-<script src="roster.js"></script>
-
-<!-- Auditointi -->
-<script src="audit.js"></script>
-
-<!-- Offline tila -->
-<script src="offline.js"></script>
-
-<script src="activeflight.js"></script>
-
-<!-- Kaverit -->
-<script src="friends.js"></script>
-
-<!-- Suosikit -->
-<script src="favorites.js"></script>
-
-<!-- pdf.min -->
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<!-- Kartta: D3 + TopoJSON -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 
-<!-- Lennon valmistelu -->
-<script src="briefing.js"></script>
+<!-- 2. Versio + migraatiot -->
+<script src="version.js"></script>
+<script src="db.js"></script>
 
-<!-- Pääsovellus -->
+<!-- 3. Sovellusinfra (createModal, fetchJourneyLog, loadAssignedFlights) -->
 <script src="app.js"></script>
 
+<!-- 4. Lokikirja (käyttää app.js:n funktioita) -->
+<script src="LogBook.js"></script>
+
+<!-- 5. Muut moduulit -->
+<script src="map.js"></script>   
+<script src="airport-db.js"></script> 
+<script src="ofp-parser.js"></script>
+<script src="ofp-data.js"></script>
+<script src="ofp-map.js"></script>
+<script src="weather.js"></script>
+<script src="weekview.js"></script>
+<script src="roster.js"></script>
+<script src="audit.js"></script>
+<script src="offline.js"></script>
+<script src="activeflight.js"></script>
+<script src="friends.js"></script>
+<script src="favorites.js"></script>
+<script src="defects.js"></script>
+<script src="briefing.js"></script>
+<script src="tripinfo.js"></script>
+<script src="notam.js"></script>
 </head>
+
 <body>
 
+  <!-- ============ Boot overlay ============ -->
+<div id="boot-overlay" class="boot-overlay">
+  <div class="boot-inner">
+    <div class="boot-logo">
+      <span>FD</span>
+      <span class="boot-ring"></span>
+    </div>
+    <div class="boot-title">FLIGHT<span>DECK</span></div>
+    <div class="boot-sub">Initializing systems…</div>
+
+    <div class="boot-steps" id="boot-steps">
+      <div class="boot-step" data-step="db">
+        <span class="boot-step-icon">○</span>
+        <span class="boot-step-label">IndexedDB</span>
+      </div>
+      <div class="boot-step" data-step="user">
+        <span class="boot-step-icon">○</span>
+        <span class="boot-step-label">Käyttäjä</span>
+      </div>
+      <div class="boot-step" data-step="airports">
+        <span class="boot-step-icon">○</span>
+        <span class="boot-step-label">Lentokenttätietokanta</span>
+      </div>
+      <div class="boot-step" data-step="roster">
+        <span class="boot-step-icon">○</span>
+        <span class="boot-step-label">Roster</span>
+      </div>
+      <div class="boot-step" data-step="map">
+        <span class="boot-step-icon">○</span>
+        <span class="boot-step-label">Kartta</span>
+      </div>
+    </div>
+
+    <div class="boot-progress">
+      <div class="boot-progress-fill" id="boot-progress-fill"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ============ Ambient background ============ -->
-<div class="-bg" aria-hidden="true">
-  <div class="-glow"></div>
-  <div class="-grid"></div>
-  <div class="-scan"></div>
+<div class="jarvis-bg" aria-hidden="true">
+  <div class="jarvis-glow"></div>
+  <div class="jarvis-grid"></div>
+  <div class="jarvis-scan"></div>
 </div>
 
 <!-- ============ Top status bar ============ -->
@@ -88,7 +109,10 @@
       <span>FD</span>
       <span class="brand-ring"></span>
     </div>
-    <div class="logo-text">FlightDeck</div>
+    <div class="brand-text">
+      <div class="brand-title">FLIGHT<span>DECK</span></div>
+      <div class="brand-sub" id="topbar-sub">Standing by…</div>
+    </div>
   </div>
 
   <div class="topbar-right">
@@ -100,6 +124,15 @@
       <span class="tc-icon">😴</span>
       <span class="tc-time" id="topbar-countdown-time">–</span>
     </div>
+    <div id="token-warning" style="display:none; align-items:center; gap:6px;
+         padding:6px 12px; border-radius:999px; background:rgba(255,179,0,0.12);
+         border:1px solid rgba(255,179,0,0.4); cursor:pointer;"
+         onclick="switchTab('settings')"
+         title="Token vanhenee pian — klikkaa päivittääksesi">
+      <span style="font-size:14px;">⚠️</span>
+      <span id="token-warning-time" style="font-size:12px; font-weight:700;
+            color:var(--warning); font-family:var(--font-mono);">–</span>
+    </div>
     <div class="clock" id="live-clock">--:--</div>
   </div>
 </header>
@@ -108,50 +141,41 @@
 <main class="content">
 
   <!-- ========== HOME ========== -->
-<section class="tab-panel active" id="tab-home">
-  <div class="hero">
-    <div class="hero-greet">
-      <div class="greet-line">Hei,</div>
-      <div class="greet-name" id="user-name">Kapteeni</div>
-    </div>
-    <div class="hero-status">
-      <span class="pulse-dot"></span>
-      <span id="duty-status">Valmiustilassa</span>
-    </div>
-  </div>
-
-  <!-- Nykyinen lento (vain jos aktiivinen) -->
+  <section class="tab-panel active" id="tab-home">
+  <!-- Aktiivinen lento (jos on) -->
   <div id="active-flight-card" class="card card-accent af-card" style="display:none;"></div>
 
-    <!-- Seuraava lento (täysleveä) -->
-  <div class="card card-accent" id="next-flight-card">
-    <div class="card-label">
-      <span class="dot dot-live"></span> SEURAAVA LENTO
+  <!-- MAAPALLO-KORTTI -->
+  <div class="home-map-card" id="home-map-card">
+    <div class="home-map-bg" id="fc-map"></div>
+
+    <!-- Hero päällä -->
+    <div class="home-map-hero">
+      <div class="hero-greet">
+        <span class="greet-line">Hei,</span>
+        <span class="greet-name" id="user-name">Kapteeni</span>
+      </div>
+      <div class="hero-status">
+        <span class="pulse-dot"></span>
+        <span id="duty-status">Valmiustilassa</span>
+      </div>
     </div>
-    <div id="next-flight-content">
-      <div class="empty">Ei tulevia lentoja</div>
+
+    <!-- Lennon tiedot alhaalla -->
+    <div class="home-map-overlay" id="home-map-overlay" style="display:none;"></div>
+
+    <!-- Tyhjä-tila -->
+    <div class="home-map-empty" id="home-map-empty" style="display:none;">
+      <div style="font-size:32px; margin-bottom:8px;">✈</div>
+      <div style="font-weight:600; color:var(--text);">Ei tulevia lentoja</div>
+      <div style="font-size:12px; color:var(--dim); margin-top:6px;">
+        Synkkaa roster nähdäksesi seuraavan lennon
+      </div>
     </div>
   </div>
 
-  <!-- Sää (täysleveä) -->
-  <div class="card">
-    <div class="card-label">SÄÄ</div>
-    <div class="home-wx-split">
-      <div class="home-wx-half">
-        <div class="home-wx-sublabel" id="home-wx-dep-label">LÄHTÖ</div>
-        <div class="weather-widget" id="weather-dep">
-          <div class="empty">–</div>
-        </div>
-      </div>
-      <div class="home-wx-half">
-        <div class="home-wx-sublabel" id="home-wx-arr-label">SAAPUMINEN</div>
-        <div class="weather-widget" id="weather-arr">
-          <div class="empty">–</div>
-        </div>
-      </div>
-    </div>
-  </div>
 </section>
+
   <!-- ========== FLIGHTS ========== -->
   <section class="tab-panel" id="tab-flights">
     <div class="section-head">
@@ -172,13 +196,12 @@
     </div>
 
     <div class="toolbar">
-      <!-- Taulukon työkalurivi -->
       <div class="toolbar-content" id="toolbar-table">
         <div class="toolbar-search">
           <span class="search-icon">⌕</span>
           <input type="text" id="assigned-search-text"
-                placeholder="Hae lentoa, reittiä, rekisteriä…"
-                oninput="filterAssignedFlightsTable()">
+                 placeholder="Hae lentoa, reittiä, rekisteriä…"
+                 oninput="filterAssignedFlightsTable()">
         </div>
         <div class="toolbar-dates">
           <input type="date" id="assigned-date-from">
@@ -188,7 +211,6 @@
         <button class="btn-primary" onclick="loadAssignedFlights(true, true)">Hae</button>
       </div>
 
-      <!-- Viikkonäkymän työkalurivi -->
       <div class="toolbar-content" id="toolbar-week" style="display:none;">
         <button class="wk-nav-btn" onclick="weekViewPrev()" title="Edellinen viikko">←</button>
         <div class="wk-label" id="wk-label">–</div>
@@ -197,12 +219,10 @@
       </div>
     </div>
 
-    <!-- Taulukkonäkymä -->
     <div id="assigned-flights-container" class="table-wrap">
       <div class="empty">Ei dataa. Paina <strong>Hae</strong>.</div>
     </div>
 
-    <!-- Viikkonäkymä -->
     <div id="week-view-container" class="week-view" style="display:none;"></div>
   </section>
 
@@ -211,15 +231,10 @@
     <div class="section-head">
       <h2>Lennon briefing</h2>
       <div class="section-actions">
-        <button class="btn-ghost" onclick="renderBriefing()">
-          ⟳ Päivitä
-        </button>
-        <button class="btn-ghost" onclick="openBriefingOFP()">
-          ✈ Avaa OFP
-        </button>
+        <button class="btn-ghost" onclick="renderBriefing()">⟳ Päivitä</button>
+        <button class="btn-ghost" onclick="openBriefingOFP()">✈ Avaa OFP</button>
       </div>
     </div>
-
     <div id="briefing-container">
       <div class="empty">Ladataan…</div>
     </div>
@@ -227,12 +242,8 @@
 
   <!-- ========== FRIENDS ========== -->
   <section class="tab-panel" id="tab-friends">
-    <div class="section-head">
-      <h2>Kaverit</h2>
-    </div>
-    <div id="friends-container">
-      <div class="empty">Ladataan…</div>
-    </div>
+    <div class="section-head"><h2>Kaverit</h2></div>
+    <div id="friends-container"><div class="empty">Ladataan…</div></div>
   </section>
 
   <!-- ========== LOGBOOK ========== -->
@@ -242,30 +253,20 @@
       <span id="chain-status" class="chain-status" style="display:none;"></span>
       <div class="section-actions">
         <button class="btn-ghost" onclick="signAllFlightsForPilot()"
-                title="Allekirjoita kaikki lennot samalla kapteenilla">
-          ✍️ Allekirjoita kaikki
-        </button>
+                title="Allekirjoita kaikki lennot samalla kapteenilla">✍️ Allekirjoita kaikki</button>
         <button class="btn-ghost" onclick="importLogbookFromCSV()">📥 Tuo CSV</button>
         <button class="btn-ghost" onclick="showExportDialog()">⬇ Vie</button>
-        <button class="btn-ghost" onclick="saveLogbookPDF(window._lbEntries || [])">
-          ⎙ Tallenna PDF
-        </button>
+        <button class="btn-ghost" onclick="saveLogbookPDF(window._lbEntries || [])">⎙ Tallenna PDF</button>
       </div>
     </div>
-
     <div id="logbook-container" class="table-wrap">
-      <div class="empty">
-        Ei kirjauksia. Tuo lentoja <strong>Lennot</strong>-välilehdeltä tai synkkaa rosteri.
-      </div>
+      <div class="empty">Ei kirjauksia. Tuo lentoja <strong>Lennot</strong>-välilehdeltä.</div>
     </div>
   </section>
 
   <!-- ========== WEATHER ========== -->
   <section class="tab-panel" id="tab-weather">
-    <div class="section-head">
-      <h2>Sää &amp; NOTAMit</h2>
-    </div>
-
+    <div class="section-head"><h2>Sää &amp; NOTAMit</h2></div>
     <div class="card">
       <div class="card-label">METAR / TAF</div>
       <div class="row-flex">
@@ -275,14 +276,11 @@
       </div>
       <pre id="wx-output" class="wx-output">–</pre>
     </div>
-
     <div class="card">
       <div class="card-label">NOTAM</div>
       <pre id="notam-output" class="wx-output">–</pre>
     </div>
   </section>
-
-  
 
   <!-- ========== SETTINGS ========== -->
   <section class="tab-panel" id="tab-settings">
@@ -292,78 +290,95 @@
       <div class="card-label">SKYPLAN ACCESS TOKEN</div>
       <textarea id="skyplan_token" class="mono" rows="4"
                 placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"></textarea>
+      <div id="token-status" style="margin-top:12px; font-size:13px; padding:10px 14px;
+           border-radius:8px; background:var(--input); border:1px solid var(--border);">
+        <span style="color:var(--dim);">Ei tokenia tallennettuna</span>
+      </div>
       <div class="row-flex end">
         <button class="btn-primary" onclick="saveTokenFromSettings()">Tallenna</button>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-label">SKYPLAN REFRESH TOKEN</div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+        Avaa Skyplan-app → 5× tap näyttöön → debug → etsi
+        <span class="mono">POST /api/v1/auth/refresh-token</span>.
+        Kopioi <b>RESPONSE → Body → RefreshToken</b> (uusi, rotautunut).
+      </div>
+      <textarea id="skyplan_refresh_token_input" class="mono" rows="3"
+                placeholder="eyJhbGciOiJIUzUxMiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI0NmE3NjIxYi0..."
+                style="width:100%; padding:10px; border-radius:8px; background:var(--input);
+                       color:var(--text); border:1px solid var(--border); font-size:11px;
+                       box-sizing:border-box; word-break:break-all;"></textarea>
+      <div id="refresh-token-status" style="margin-top:10px; font-size:12px;"></div>
+      <div class="row-flex end">
+        <button class="btn-ghost" onclick="clearRefreshToken()">Poista</button>
+        <button class="btn-primary" onclick="saveRefreshToken()">Tallenna</button>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-label">AUTOROUTER API KEY</div>
       <input type="text" id="autorouter_key" class="mono"
-            placeholder="eyJhbGciOiJSUzI1NiIs...">
+             placeholder="eyJhbGciOiJSUzI1NiIs...">
       <div class="row-flex end">
         <button class="btn-primary" onclick="saveAutoRouterKey()">Tallenna</button>
       </div>
     </div>
+
     <div class="card">
-  <div class="card-label">KÄYTTÄJÄ</div>
-  <div class="kv"><span>Nimi</span><span id="settings-user">–</span></div>
-  <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
-  <div class="kv">
-    <span>Versio</span>
-    <span id="settings-version" class="mono">–</span>
-  </div>
-  <div class="kv">
-    <span>Build</span>
-    <span id="settings-build" class="mono">–</span>
-  </div>
-</div>
+      <div class="card-label">KÄYTTÄJÄ</div>
+      <div class="kv"><span>Nimi</span><span id="settings-user">–</span></div>
+      <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
+      <div class="kv"><span>Versio</span><span id="settings-version" class="mono">–</span></div>
+      <div class="kv"><span>Build</span><span id="settings-build" class="mono">–</span></div>
+    </div>
 
-<div class="card">
-  <div class="card-label">LOKIKIRJAN VARMUUSKOPIO</div>
-  <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-    Vie lokikirja JSON-tiedostona iCloud Driveen tai Google Driveen.
-    Voit palauttaa sen myöhemmin millä tahansa laitteella.
-  </div>
-  <div class="row-flex">
-    <button class="btn-primary" onclick="exportLogbookJSON()">⬆ Vie iCloud / Drive</button>
-    <button class="btn-ghost" onclick="importLogbookJSON()">⬇ Palauta tiedostosta</button>
-  </div>
-  <div style="font-size:11px; color:var(--faint); margin-top:10px;">
-    Suositus: vie varmuuskopio viikoittain. JSON sisältää myös allekirjoitukset ja hash-ketjun.
-  </div>
-</div>
+    <div class="card">
+      <div class="card-label">LOKIKIRJAN VARMUUSKOPIO</div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+        Vie lokikirja JSON-tiedostona iCloud Driveen tai Google Driveen.
+        Voit palauttaa sen myöhemmin millä tahansa laitteella.
+      </div>
+      <div class="row-flex">
+        <button class="btn-primary" onclick="exportLogbookJSON()">⬆ Vie iCloud / Drive</button>
+        <button class="btn-ghost" onclick="importLogbookJSON()">⬇ Palauta tiedostosta</button>
+      </div>
+      <div style="font-size:11px; color:var(--faint); margin-top:10px;">
+        Suositus: vie varmuuskopio viikoittain. JSON sisältää myös allekirjoitukset ja hash-ketjun.
+      </div>
+    </div>
 
-<div class="card">
-  <div class="card-label">CERTIFICATION-ALLEKIRJOITUS</div>
-  <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-    Allekirjoitus joka piirretään lokikirjan PDF:ään.
-    Kysytään aina ennen PDF:n luontia, mutta muistetaan seuraavalla kerralla.
-  </div>
-  <div id="cert-sig-status" style="font-size:12px; color:var(--dim); margin-bottom:12px;">
-    Ei tallennettua allekirjoitusta
-  </div>
-  <div class="row-flex end">
-    <button class="btn-ghost" onclick="clearCertificationSignature(); updateCertSigStatus();">
-      Poista allekirjoitus
-    </button>
-    <button class="btn-primary" onclick="promptCertificationSignature()">
-      ✍️ Piirrä allekirjoitus
-    </button>
-  </div>
-</div>
+    <div class="card">
+      <div class="card-label">CERTIFICATION-ALLEKIRJOITUS</div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+        Allekirjoitus joka piirretään lokikirjan PDF:ään.
+        Kysytään aina ennen PDF:n luontia, mutta muistetaan seuraavalla kerralla.
+      </div>
+      <div id="cert-sig-status" style="font-size:12px; color:var(--dim); margin-bottom:12px;">
+        Ei tallennettua allekirjoitusta
+      </div>
+      <div class="row-flex end">
+        <button class="btn-ghost" onclick="clearCertificationSignature(); updateCertSigStatus();">
+          Poista allekirjoitus
+        </button>
+        <button class="btn-primary" onclick="promptCertificationSignature()">
+          ✍️ Piirrä allekirjoitus
+        </button>
+      </div>
+    </div>
 
-<div class="card">
-  <div class="card-label">PÄIVITYS</div>
-  <div style="font-size:12.5px; color:var(--dim); line-height:1.5; margin-bottom:12px;">
-    Jos sovellus näyttää vanhaa versiota, pakota päivitys.
-    Tämä tyhjentää selaimen cachen mutta säilyttää tallennetun datan.
-  </div>
-  <div class="row-flex end">
-    <button class="btn-primary" onclick="forceAppRefresh()">
-      ⟳ Pakota päivitys
-    </button>
-  </div>
-</div>
+    <div class="card">
+      <div class="card-label">PÄIVITYS</div>
+      <div style="font-size:12.5px; color:var(--dim); line-height:1.5; margin-bottom:12px;">
+        Jos sovellus näyttää vanhaa versiota, pakota päivitys.
+        Tämä tyhjentää selaimen cachen mutta säilyttää tallennetun datan.
+      </div>
+      <div class="row-flex end">
+        <button class="btn-primary" onclick="forceAppRefresh()">⟳ Pakota päivitys</button>
+      </div>
+    </div>
 
     <div class="card">
       <div class="card-label">OFFLINE-VÄLIMUISTI</div>
@@ -377,27 +392,13 @@
 
 <!-- ============ Bottom tab bar ============ -->
 <nav class="tabbar">
-  <button class="tab-btn active" data-tab="home">
-    <span class="tab-icon">◉</span><span>Koti</span>
-  </button>
-  <button class="tab-btn" data-tab="flights">
-    <span class="tab-icon">✈</span><span>Lennot</span>
-  </button>
-  <button class="tab-btn" data-tab="logbook">
-    <span class="tab-icon">▤</span><span>Lokikirja</span>
-  </button>
-  <button class="tab-btn" data-tab="briefing">
-    <span class="tab-icon">📋</span><span>Briefing</span>
-  </button>
-  <button class="tab-btn" data-tab="friends">
-    <span class="tab-icon">👥</span><span>Kaverit</span>
-  </button>
-  <button class="tab-btn" data-tab="weather">
-    <span class="tab-icon">☁</span><span>Sää</span>
-  </button>
-  <button class="tab-btn" data-tab="settings">
-    <span class="tab-icon">⚙</span><span>Asetukset</span>
-  </button>
+  <button class="tab-btn active" data-tab="home"><span class="tab-icon">◉</span><span>Koti</span></button>
+  <button class="tab-btn" data-tab="flights"><span class="tab-icon">✈</span><span>Lennot</span></button>
+  <button class="tab-btn" data-tab="logbook"><span class="tab-icon">▤</span><span>Lokikirja</span></button>
+  <button class="tab-btn" data-tab="briefing"><span class="tab-icon">📋</span><span>Briefing</span></button>
+  <button class="tab-btn" data-tab="friends"><span class="tab-icon">👥</span><span>Kaverit</span></button>
+  <button class="tab-btn" data-tab="weather"><span class="tab-icon">☁</span><span>Sää</span></button>
+  <button class="tab-btn" data-tab="settings"><span class="tab-icon">⚙</span><span>Asetukset</span></button>
 </nav>
 
 <!-- ============ Global loader ============ -->
@@ -412,37 +413,15 @@
 <!-- ============ Toasts ============ -->
 <div id="toast-container" class="toast-container"></div>
 
-<!-- ============ UI glue (missing pieces referenced by app.js) ============ -->
+<!-- ================================================================
+     UI GLUE · täydentää app.js:n viittaamat funktiot
+     ================================================================ -->
 <script>
-/* ------------------------------------------------------------------
- *  Flight Deck · UI glue
- * Täydentää app.js:n viittaamat funktiot joita ei ole määritelty:
- *   - showModalLoader / hideModalLoader
- *   - showToast
- *   - decodeJWT
- *   - tab-navigaatio, kello, online-tila
- *   - skyplan_token kentän esitäyttö
- * ------------------------------------------------------------------ */
+'use strict';
 
-
-  // Alusta IndexedDB ennen kuin muu sovellus käyttää lokikirjaa
-  (async () => {
-    if (typeof dbInit === 'function') {
-      try {
-        await dbInit();
-        console.log('[Boot] IndexedDB valmis');
-        // Päivitä lokikirja-näkymä kun DB on ladannut
-        if (typeof renderLogbookTable === 'function') {
-          renderLogbookTable();
-        }
-      } catch (e) {
-        console.error('[Boot] dbInit epäonnistui:', e);
-      }
-    }
-  })();
-
-
-/* ---- Loader ---- */
+/* ==============================================================
+ * LOADER
+ * ============================================================== */
 function showModalLoader(title, sub) {
   const el = document.getElementById('global-loader');
   if (!el) return;
@@ -460,7 +439,9 @@ function hideModalLoader() {
 window.showModalLoader = showModalLoader;
 window.hideModalLoader = hideModalLoader;
 
-/* ---- Toast ---- */
+/* ==============================================================
+ * TOAST
+ * ============================================================== */
 function showToast(message, type = 'info', duration = 3200) {
   const container = document.getElementById('toast-container');
   if (!container) return;
@@ -481,7 +462,9 @@ function showToast(message, type = 'info', duration = 3200) {
 }
 window.showToast = showToast;
 
-/* ---- JWT decode ---- */
+/* ==============================================================
+ * JWT DECODE
+ * ============================================================== */
 function decodeJWT(token) {
   if (!token || typeof token !== 'string') return null;
   try {
@@ -502,7 +485,9 @@ function decodeJWT(token) {
 }
 window.decodeJWT = decodeJWT;
 
-/* ---- Tabs ---- */
+/* ==============================================================
+ * TAB-NAVIGAATIO
+ * ============================================================== */
 function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.id === `tab-${tabId}`);
@@ -512,18 +497,21 @@ function switchTab(tabId) {
   });
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  // Lazy-load content per tab
   if (tabId === 'flights') {
     const c = document.getElementById('assigned-flights-container');
     if (c && c.querySelector('.empty')) loadAssignedFlights(false, false);
   }
   if (tabId === 'settings') hydrateSettingsTab();
 }
+window.switchTab = switchTab;
+
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-/* ---- Live clock ---- */
+/* ==============================================================
+ * LIVE CLOCK
+ * ============================================================== */
 function tickClock() {
   const el = document.getElementById('live-clock');
   if (!el) return;
@@ -532,9 +520,12 @@ function tickClock() {
   const mm = String(now.getMinutes()).padStart(2, '0');
   el.textContent = `${hh}:${mm}`;
 }
-setInterval(tickClock, 1000); tickClock();
+setInterval(tickClock, 1000);
+tickClock();
 
-/* ---- Online / offline indicator ---- */
+/* ==============================================================
+ * ONLINE / OFFLINE
+ * ============================================================== */
 function updateConnStatus() {
   const wrap = document.getElementById('conn-status');
   const label = document.getElementById('conn-label');
@@ -548,66 +539,225 @@ window.addEventListener('online', updateConnStatus);
 window.addEventListener('offline', updateConnStatus);
 updateConnStatus();
 
-
-/* --- Käynnistys --- */
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    // Viive, jotta hydrateUser() ehtii lukea JWT:n
-    setTimeout(() => autoLoadMonthRoster().catch(() => {}), 1200);
-  });
-} else {
-  setTimeout(() => autoLoadMonthRoster().catch(() => {}), 1200);
-}
-
-/* ---- Greeting & user identity from JWT ---- */
+/* ==============================================================
+ * HYDRATE USER (JWT:stä)
+ * ============================================================== */
 async function hydrateUser() {
   const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null)
     : localStorage.getItem('skyplan_token');
   if (!token) return;
+
   const payload = decodeJWT(token) || {};
   const first = payload.given_name || payload.FirstName || payload.firstName || '';
   const last  = payload.family_name || payload.LastName  || payload.lastName  || '';
   const empId = payload.employeeid || payload.EmployeeID || payload.employeeId
              || payload.nameid || payload.sub || '';
   const name = [first, last].filter(Boolean).join(' ') || 'Kapteeni';
+
   const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
   set('user-name', name);
+  set('topbar-sub', `Tervetuloa takaisin, ${first || name}`);
   set('settings-user', name);
   set('settings-empid', empId || '–');
 }
+window.hydrateUser = hydrateUser;
 
+/* ==============================================================
+ * TOKEN STATUS · access tokenin vanheneminen
+ * ============================================================== */
+function updateTokenStatus() {
+  const el = document.getElementById('token-status');
+  if (!el) return;
+
+  const token = localStorage.getItem('skyplan_token');
+  if (!token) {
+    el.innerHTML = '<span style="color:var(--dim);">Ei tokenia tallennettuna</span>';
+    return;
+  }
+
+  const payload = decodeJWT(token);
+  if (!payload) {
+    el.innerHTML = '<span style="color:var(--error);">⚠️ Virheellinen token</span>';
+    return;
+  }
+  if (!payload.exp) {
+    el.innerHTML = '<span style="color:var(--warning);">Token ilman vanhenemistietoa</span>';
+    return;
+  }
+
+  const exp = payload.exp * 1000;
+  const diff = exp - Date.now();
+
+  if (diff <= 0) {
+    el.innerHTML = `
+      <div style="color:var(--error); font-weight:700;">⚠️ Token vanhentunut</div>
+      <div style="font-size:11.5px; color:var(--dim); margin-top:4px;">
+        Vanheni: ${new Date(exp).toLocaleString('fi-FI')}
+      </div>`;
+    return;
+  }
+
+  const hours = Math.floor(diff / (60 * 60 * 1000));
+  const mins = Math.floor((diff % (60 * 60 * 1000)) / 60000);
+
+  let color = 'var(--success)';
+  let icon = '✓';
+  let label = 'Voimassa';
+
+  if (hours < 1)      { color = 'var(--error)';   icon = '⚠️'; label = 'Vanhenee pian!'; }
+  else if (hours < 3) { color = 'var(--warning)'; icon = '⏳'; label = 'Vanhenee'; }
+
+  el.innerHTML = `
+    <div style="color:${color}; font-weight:700; margin-bottom:4px;">
+      ${icon} ${label} — ${hours} h ${mins} min
+    </div>
+    <div style="font-size:11.5px; color:var(--dim);">
+      Vanhenee: ${new Date(exp).toLocaleString('fi-FI')}
+    </div>
+    <div style="font-size:11px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
+      ${payload.preferred_username || payload.name || ''} · #${payload.employeeid || ''}
+    </div>`;
+}
+window.updateTokenStatus = updateTokenStatus;
+
+/* ==============================================================
+ * REFRESH TOKEN STATUS
+ * ============================================================== */
+function updateRefreshTokenStatus() {
+  const el = document.getElementById('refresh-token-status');
+  const input = document.getElementById('skyplan_refresh_token_input');
+  if (!el) return;
+
+  const rt = localStorage.getItem('skyplan_refresh_token');
+  if (!rt) {
+    el.innerHTML = '<span style="color:var(--dim);">Ei refresh tokenia</span>';
+    if (input) input.value = '';
+    return;
+  }
+
+  // Esitäytä textarea (näkyy mutta on muokattavissa)
+  if (input && !input.value) input.value = rt;
+
+  const payload = decodeJWT(rt);
+
+  // Riippumatta siitä voiko JWT:tä dekoodata — näytä että tallessa
+  if (!payload || !payload.exp) {
+    el.innerHTML = `
+      <div style="color:var(--success); font-weight:700;">✓ Tallennettu</div>
+      <div style="font-size:10.5px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
+        ${rt.slice(0, 30)}…${rt.slice(-10)}
+      </div>`;
+    return;
+  }
+
+  const exp = new Date(payload.exp * 1000);
+  const diff = exp - Date.now();
+  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+
+  if (diff <= 0) {
+    el.innerHTML = `
+      <div style="color:var(--error); font-weight:700;">⚠️ Refresh token vanhentunut</div>
+      <div style="font-size:11px; color:var(--dim); margin-top:4px;">
+        Vanheni: ${exp.toLocaleString('fi-FI')} — hae uusi Skyplanista
+      </div>`;
+    return;
+  }
+
+  const color = days < 3 ? 'var(--warning)' : 'var(--success)';
+  const icon = days < 3 ? '⏳' : '✓';
+
+  el.innerHTML = `
+    <div style="color:${color}; font-weight:700;">
+      ${icon} Voimassa ${days} pv ${hours} h
+    </div>
+    <div style="font-size:11px; color:var(--dim); margin-top:4px;">
+      Vanhenee: ${exp.toLocaleString('fi-FI')}
+    </div>
+    <div style="font-size:10.5px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
+      ${rt.slice(0, 30)}…${rt.slice(-10)}
+    </div>`;
+}
+window.updateRefreshTokenStatus = updateRefreshTokenStatus;
+
+function saveRefreshToken() {
+  const input = document.getElementById('skyplan_refresh_token_input');
+  if (!input) return;
+  const t = (input.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
+  if (!t) { showToast('Anna refresh token.', 'warning'); return; }
+  if (t.length < 50) { showToast('Refresh token näyttää liian lyhyeltä.', 'warning'); return; }
+  try {
+    localStorage.setItem('skyplan_refresh_token', t);
+    showToast('Refresh token tallennettu.', 'success');
+    updateRefreshTokenStatus();
+  } catch (e) {
+    showToast('Tallennus epäonnistui.', 'error');
+  }
+}
+window.saveRefreshToken = saveRefreshToken;
+
+function clearRefreshToken() {
+  if (!confirm('Poista refresh token?')) return;
+  try { localStorage.removeItem('skyplan_refresh_token'); } catch (e) {}
+  const input = document.getElementById('skyplan_refresh_token_input');
+  if (input) input.value = '';
+  updateRefreshTokenStatus();
+  showToast('Poistettu.', 'info');
+}
+window.clearRefreshToken = clearRefreshToken;
+
+/* ==============================================================
+ * CERTIFICATION-ALLEKIRJOITUS · status
+ * ============================================================== */
 function updateCertSigStatus() {
   const el = document.getElementById('cert-sig-status');
   if (!el) return;
-  const saved = getCertificationSignature();
+
+  const saved = (typeof getCertificationSignature === 'function')
+    ? getCertificationSignature()
+    : null;
+
   if (!saved) {
     el.innerHTML = '<span style="color:var(--dim);">Ei tallennettua allekirjoitusta</span>';
     return;
   }
+
   const when = new Date(saved.savedAt).toLocaleString('fi-FI');
-  el.innerHTML = `<span style="color:var(--success);">✓ Allekirjoitus tallessa</span>
+  el.innerHTML = `
+    <span style="color:var(--success);">✓ Allekirjoitus tallessa</span>
     · ${when}
     ${saved.license ? `· <span class="mono">${saved.license}</span>` : ''}`;
 }
 window.updateCertSigStatus = updateCertSigStatus;
 
-/* ---- Settings tab hydrators ---- */
+/* ==============================================================
+ * SETTINGS HYDRATION
+ * ============================================================== */
 function hydrateSettingsTab() {
+  // Skyplan access token
   const tokenInput = document.getElementById('skyplan_token');
   if (tokenInput && !tokenInput.value) {
     tokenInput.value = localStorage.getItem('skyplan_token') || '';
   }
+
+  // Cache-tilastot
   try {
-    updateCertSigStatus();
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('cache-roster-stat', `${Array.isArray(roster) ? roster.length : 0} lentoa`);
-    const setV = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-    setV('settings-version', window.APP_VERSION || '–');
-    setV('settings-build', window.APP_BUILD || '–');
+    set('settings-version', window.APP_VERSION || '–');
+    set('settings-build', window.APP_BUILD || '–');
   } catch (e) {}
+
+  // Allekirjoitus
+  if (typeof updateCertSigStatus === 'function') updateCertSigStatus();
+
+  // Token-tilat
+  if (typeof updateTokenStatus === 'function') updateTokenStatus();
+  if (typeof updateRefreshTokenStatus === 'function') updateRefreshTokenStatus();
 }
+window.hydrateSettingsTab = hydrateSettingsTab;
 
 function saveTokenFromSettings() {
   const input = document.getElementById('skyplan_token');
@@ -618,25 +768,205 @@ function saveTokenFromSettings() {
     localStorage.setItem('skyplan_token', t);
     showToast('Token tallennettu.', 'success');
     hydrateUser();
+    updateTokenStatus();
   } catch (e) {
     showToast('Tokenin tallennus epäonnistui.', 'error');
   }
 }
 window.saveTokenFromSettings = saveTokenFromSettings;
 
+/* ==============================================================
+ * TOPBAR TOKEN VAROITUS
+ * ============================================================== */
+function updateTopbarTokenWarning() {
+  const el = document.getElementById('token-warning');
+  const timeEl = document.getElementById('token-warning-time');
+  if (!el || !timeEl) return;
+
+  const token = localStorage.getItem('skyplan_token');
+  if (!token) { el.style.display = 'none'; return; }
+
+  const payload = decodeJWT(token);
+  if (!payload?.exp) { el.style.display = 'none'; return; }
+
+  const diff = payload.exp * 1000 - Date.now();
+
+  if (diff <= 0) {
+    el.style.display = 'flex';
+    timeEl.textContent = 'vanhentunut';
+    return;
+  }
+
+  // Varoita jos alle 2 h
+  if (diff < 2 * 60 * 60 * 1000) {
+    const mins = Math.floor(diff / 60000);
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    el.style.display = 'flex';
+    timeEl.textContent = h > 0 ? `${h}h ${m}m` : `${m} min`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+window.updateTopbarTokenWarning = updateTopbarTokenWarning;
+
+setInterval(() => {
+  if (document.querySelector('#tab-settings.active')) updateTokenStatus();
+  updateTopbarTokenWarning();
+}, 60 * 1000);
+
+/* ==============================================================
+ * BOOT OVERLAY
+ * ============================================================== */
+const _boot = (() => {
+  const overlay = () => document.getElementById('boot-overlay');
+  const progressFill = () => document.getElementById('boot-progress-fill');
+  const stepsEl = () => document.getElementById('boot-steps');
+
+  const TOTAL_STEPS = 5;
+  let doneCount = 0;
+
+  function setStep(name, state) {
+    const el = stepsEl()?.querySelector(`.boot-step[data-step="${name}"]`);
+    if (!el) return;
+    el.classList.remove('is-active', 'is-done', 'is-error');
+    const icon = el.querySelector('.boot-step-icon');
+    if (state === 'active') {
+      el.classList.add('is-active');
+      if (icon) icon.textContent = '◌';
+    } else if (state === 'done') {
+      el.classList.add('is-done');
+      if (icon) icon.textContent = '✓';
+      doneCount++;
+      updateProgress();
+    } else if (state === 'error') {
+      el.classList.add('is-error');
+      if (icon) icon.textContent = '!';
+      doneCount++;
+      updateProgress();
+    }
+  }
+
+  function updateProgress() {
+    const pct = Math.min(100, Math.round((doneCount / TOTAL_STEPS) * 100));
+    const fill = progressFill();
+    if (fill) fill.style.width = pct + '%';
+  }
+
+  function setSub(text) {
+    const el = document.querySelector('.boot-sub');
+    if (el) el.textContent = text;
+  }
+
+  function hide() {
+    const el = overlay();
+    if (!el) return;
+    // Varmista 100% ennen häivytystä
+    const fill = progressFill();
+    if (fill) fill.style.width = '100%';
+    setTimeout(() => el.classList.add('is-hidden'), 400);
+    setTimeout(() => el.remove(), 1200);
+  }
+
+  // Aloita ensimmäinen vaihe aktiivisena
+  setTimeout(() => setStep('db', 'active'), 100);
+
+  return { setStep, setSub, hide };
+})();
+window._boot = _boot;
+
+/* ==============================================================
+ * BOOT · aja kun kaikki funktiot on määritelty
+ * ============================================================== */
+document.addEventListener('DOMContentLoaded', async () => {
+  const boot = window._boot;
+
+  // 1. IndexedDB init
+  if (typeof dbInit === 'function') {
+    try {
+      await dbInit();
+      console.log('[Boot] IndexedDB valmis');
+      if (typeof renderLogbookTable === 'function') renderLogbookTable();
+      boot?.setStep('db', 'done');
+    } catch (e) {
+      console.error('[Boot] dbInit epäonnistui:', e);
+      boot?.setStep('db', 'error');
+    }
+  } else {
+    boot?.setStep('db', 'done');
+  }
+
+  // 2. Käyttäjä + asetukset
+  boot?.setStep('user', 'active');
+  boot?.setSub('Loading user profile…');
+  await new Promise(r => setTimeout(r, 150));
+  hydrateUser();
+  hydrateSettingsTab();
+  boot?.setStep('user', 'done');
+
+  // 3. Token-varoitus topbariin
+  updateTopbarTokenWarning();
+
+  // 4. Lentokenttätietokanta (airport-db.js)
+  boot?.setStep('airports', 'active');
+  boot?.setSub('Loading airports database…');
+  if (typeof initAirportDB === 'function') {
+    try {
+      await initAirportDB();
+      boot?.setStep('airports', 'done');
+    } catch (e) {
+      console.warn('[Boot] Airport DB epäonnistui:', e);
+      boot?.setStep('airports', 'error');
+    }
+  } else {
+    boot?.setStep('airports', 'done');
+  }
+
+  // 5. PDF.js worker
   if (typeof pdfjsLib !== 'undefined') {
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   }
 
-/* ---- Boot ---- */
-document.addEventListener('DOMContentLoaded', () => {
-  hydrateUser();
-  hydrateSettingsTab();
-  // Esitäytä token-kenttä asetuksissa
-  const t = localStorage.getItem('skyplan_token');
-  const input = document.getElementById('skyplan_token');
-  if (t && input) input.value = t;
+  // 6. Rosterin autolataus
+  boot?.setStep('roster', 'active');
+  boot?.setSub('Fetching roster…');
+  if (typeof autoLoadMonthRoster === 'function') {
+    try {
+      await Promise.race([
+        autoLoadMonthRoster(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+      ]);
+      boot?.setStep('roster', 'done');
+    } catch (e) {
+      console.warn('[Boot] Roster epäonnistui tai aikakatkaistiin:', e);
+      boot?.setStep('roster', 'done');   // jatketaan silti
+    }
+  } else {
+    boot?.setStep('roster', 'done');
+  }
+
+  // 7. Kotisivun kartta
+  boot?.setStep('map', 'active');
+  boot?.setSub('Rendering map…');
+  if (typeof renderHomeDashboard === 'function') {
+    try {
+      await Promise.race([
+        renderHomeDashboard(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+      ]);
+      boot?.setStep('map', 'done');
+    } catch (e) {
+      console.warn('[Boot] Home dashboard epäonnistui:', e);
+      boot?.setStep('map', 'done');
+    }
+  } else {
+    boot?.setStep('map', 'done');
+  }
+
+  // 8. Piilota overlay
+  boot?.setSub('Ready');
+  setTimeout(() => boot?.hide(), 300);
 });
 </script>
 </body>

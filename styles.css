@@ -2421,6 +2421,11 @@ input[type="text"]:focus, textarea:focus {
 
 .af-card { margin-bottom: 16px; }
 
+#active-flight-card {
+  position: relative;
+  z-index: 3;
+}
+
 .af-head {
   display: flex;
   justify-content: space-between;
@@ -2722,15 +2727,235 @@ input[type="text"]:focus, textarea:focus {
   text-shadow: 0 0 12px rgba(0,194,255,0.35);
 }
 
+/* ==================================================================
+   KOTISIVU · Maapallo-kortti
+   ================================================================== */
 #tab-home.active {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding-bottom: 100px;
+  display: block;
 }
 
-#tab-home .card {
-  margin-bottom: 0;
+.home-map-card {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  border-radius: 0;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center,
+              rgba(0, 30, 60, 0.6) 0%,
+              rgba(6, 10, 21, 0.96) 100%);
+  border: none;
+  box-shadow: none;
+  z-index: 1;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Poista SÄÄ-kortin erillisyys — piilotetaan */
+#tab-home .card:not(.af-card):not(.home-map-card) {
+  display: none;
+}
+
+.home-map-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  touch-action: none;
+}
+.home-map-bg svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* --- Hero päällä --- */
+.home-map-hero {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+
+  /* ⬇ tämä muuttuu */
+  padding: calc(80px + var(--safe-top)) 24px 20px;
+
+  background: linear-gradient(180deg,
+              rgba(6, 10, 21, 0.85) 0%,
+              rgba(6, 10, 21, 0.4) 60%,
+              transparent 100%);
+  pointer-events: none;
+}
+
+.home-map-hero .hero-greet {
+  pointer-events: auto;
+}
+.home-map-hero .hero-status {
+  pointer-events: auto;
+}
+.home-map-hero .greet-line {
+  font-size: 13px;
+  letter-spacing: 3px;
+}
+.home-map-hero .greet-name {
+  font-size: 32px;
+  margin-top: 2px;
+}
+.home-map-hero .hero-status {
+  padding: 8px 14px;
+  font-size: 12px;
+}
+
+/* --- Lennon tiedot alhaalla --- */
+.home-map-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+
+  /* ⬇ ala-padding kasvaa tabbarin verran */
+  padding: 22px 24px calc(100px + var(--safe-bottom));
+
+  background: linear-gradient(0deg,
+              rgba(6, 10, 21, 0.92) 0%,
+              rgba(6, 10, 21, 0.55) 70%,
+              transparent 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  pointer-events: auto;
+}
+
+/* Reittirivi */
+.hm-route {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hm-icao {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--text);
+  padding: 4px 12px;
+  margin: -4px -12px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-shadow: 0 2px 20px rgba(0, 0, 0, 0.9);
+}
+.hm-icao:hover,
+.hm-icao:active {
+  background: rgba(0, 194, 255, 0.15);
+  color: var(--accent);
+  text-shadow: 0 0 20px rgba(0, 194, 255, 0.6);
+}
+.hm-icao-dep { color: #a8e6ff; }
+.hm-icao-arr { color: #b8f5c0; }
+.hm-arrow {
+  font-size: 26px;
+  color: var(--accent);
+  text-shadow: 0 0 14px rgba(0, 194, 255, 0.6);
+}
+.hm-flight {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 1px;
+  text-shadow: 0 0 16px rgba(0, 194, 255, 0.5), 0 2px 20px rgba(0, 0, 0, 0.9);
+}
+
+/* Info-rivi */
+.hm-info {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 14px;
+}
+.hm-info-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.hm-info-label {
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--dim);
+}
+.hm-info-value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.3px;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
+}
+
+/* Countdown */
+.hm-countdown {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: rgba(0, 194, 255, 0.1);
+  border: 1px solid rgba(0, 194, 255, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  margin-top: 4px;
+}
+.hm-countdown-label {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--dim);
+}
+.hm-countdown-value {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--accent);
+  text-shadow: 0 0 14px rgba(0, 194, 255, 0.6);
+}
+
+/* Tyhjä-tila */
+.home-map-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 30px;
+  pointer-events: none;
+}
+
+/* Pienemmät näytöt */
+@media (max-width: 700px) {
+  .home-map-card { height: clamp(340px, 55vh, 560px); }
+  .hm-icao { font-size: 24px; letter-spacing: 1.5px; }
+  .hm-arrow { font-size: 20px; }
+  .hm-flight { font-size: 16px; }
+  .home-map-hero .greet-name { font-size: 24px; }
+  .home-map-overlay { padding: 18px 18px 18px; }
 }
 
 /* ==================================================================
@@ -2986,6 +3211,101 @@ input[type="text"]:focus, textarea:focus {
 }
 
 /* ==================================================================
+   Kartan sisäinen popup (DEP/DEST/ALTN)
+   ================================================================== */
+.map-inline-popup {
+  position: absolute;
+  z-index: 100;
+  width: 380px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: 14px;
+  background: rgba(6, 10, 21, 0.96);
+  border: 1px solid var(--border-2);
+  box-shadow:
+    0 20px 60px -20px rgba(0, 0, 0, 0.95),
+    0 0 40px -10px rgba(0, 194, 255, 0.5);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  animation: mip-fade 0.22s ease;
+  overflow: hidden;
+}
+
+@keyframes mip-fade {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.mip-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(0, 194, 255, 0.08), transparent);
+  flex-shrink: 0;
+}
+.mip-icao {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 1.2px;
+  text-shadow: 0 0 14px rgba(0, 194, 255, 0.5);
+  line-height: 1;
+}
+.mip-role {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--dim);
+  margin-top: 4px;
+}
+.mip-close {
+  margin-left: auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.mip-close:hover {
+  background: rgba(255, 69, 58, 0.15);
+  border-color: var(--error);
+  color: var(--error);
+}
+.mip-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 16px;
+  min-height: 60px;
+}
+
+/* Popupin sisältölohkot pienemmiksi */
+.mip-body .notam-popup-section { padding: 10px 0; }
+.mip-body .notam-popup-head { font-size: 10px; margin-bottom: 8px; }
+.mip-body .notam-popup-grid { font-size: 11.5px; gap: 5px 12px; }
+.mip-body .notam-popup-raw { font-size: 10.5px; padding: 8px 10px; }
+.mip-body .notam-popup-text { font-size: 11px; }
+.mip-body .notam-popup-item { padding: 8px 10px; margin-bottom: 6px; }
+
+/* ==================================================================
    Trip Info (kortti briefing-sivulla)
    ================================================================== */
 .trip-grid {
@@ -3121,4 +3441,368 @@ input[type="text"]:focus, textarea:focus {
   font-weight: 700;
   letter-spacing: 0.3px;
   font-family: var(--font-ui);
+}
+
+/* ==================================================================
+   Lentoreitti-kartta (Kotisivu)
+   ================================================================== */
+.fc-map {
+  position: relative;
+  isolation: isolate;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at center,
+                     rgba(0, 30, 60, 0.35) 0%,
+                     transparent 70%);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.fc-map svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.fc-map::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 40%,
+                     rgba(0, 194, 255, 0.04) 100%);
+  z-index: 1;
+}
+
+/* Reset-nappi */
+.map-reset-btn {
+  position: absolute;
+  bottom: calc(100px + var(--safe-bottom)); /* ⬅ muutos */
+  right: 16px;                                /* ⬅ muutos */
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(0, 20, 40, 0.75);
+  border: 1px solid rgba(0, 194, 255, 0.4);
+  color: var(--accent, #00c2ff);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.15s ease;
+}
+.map-reset-btn:hover {
+  background: rgba(0, 40, 70, 0.9);
+  border-color: var(--accent, #00c2ff);
+}
+.map-reset-btn:active {
+  transform: scale(0.92);
+}
+
+/* ==================================================================
+   NOTAM-popup
+   ================================================================== */
+.notam-popup-section {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.notam-popup-section:last-child { border-bottom: none; }
+
+.notam-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--accent);
+}
+.notam-popup-badge {
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-family: var(--font-mono);
+}
+
+.notam-popup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-bottom: 10px;
+}
+.notam-popup-grid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.notam-popup-grid span { color: var(--dim); }
+.notam-popup-grid b {
+  color: var(--text);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.notam-popup-raw {
+  margin: 0;
+  padding: 10px 12px;
+  background: #08111f;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a8e6ff;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.notam-popup-item {
+  padding: 10px 12px;
+  background: var(--input);
+  border-radius: 8px;
+  border-left: 3px solid var(--warning);
+  margin-bottom: 8px;
+}
+.notam-popup-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.notam-popup-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.notam-popup-sev {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid;
+}
+.notam-popup-type {
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  font-weight: 700;
+  margin-left: auto;
+}
+.notam-popup-text {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ==================================================================
+   BOOT OVERLAY
+   ================================================================== */
+.boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(1200px 800px at 50% 30%, #0b1c33 0%, transparent 60%),
+    linear-gradient(180deg, #060a15 0%, #0a1224 100%);
+  opacity: 1;
+  transition: opacity 0.6s ease, visibility 0.6s ease;
+  visibility: visible;
+}
+.boot-overlay.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 40px;
+  max-width: 90vw;
+  text-align: center;
+}
+
+/* --- Logo --- */
+.boot-logo {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  letter-spacing: 1px;
+  font-size: 22px;
+  color: #001018;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  box-shadow:
+    0 0 40px rgba(0,194,255,0.45),
+    inset 0 1px 0 rgba(255,255,255,0.35);
+  animation: boot-logo-pulse 2.4s ease-in-out infinite;
+}
+.boot-logo .boot-ring {
+  position: absolute;
+  inset: -8px;
+  border-radius: 24px;
+  border: 1px solid rgba(0,194,255,0.35);
+  animation: boot-ring-pulse 2.4s ease-in-out infinite;
+}
+@keyframes boot-logo-pulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.04); }
+}
+@keyframes boot-ring-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50%      { opacity: 0.85; transform: scale(1.1); }
+}
+
+/* --- Otsikko --- */
+.boot-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: var(--text);
+  margin-top: 4px;
+}
+.boot-title span {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 3px;
+}
+.boot-sub {
+  font-size: 12.5px;
+  letter-spacing: 1.5px;
+  color: var(--dim);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* --- Vaiheet --- */
+.boot-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 18px;
+  min-width: 260px;
+}
+.boot-step {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(0, 194, 255, 0.03);
+  border: 1px solid rgba(0, 194, 255, 0.08);
+  transition: all 0.3s ease;
+  opacity: 0.45;
+}
+.boot-step.is-active {
+  opacity: 1;
+  background: rgba(0, 194, 255, 0.08);
+  border-color: rgba(0, 194, 255, 0.35);
+}
+.boot-step.is-done {
+  opacity: 0.85;
+  background: rgba(50, 215, 75, 0.05);
+  border-color: rgba(50, 215, 75, 0.3);
+}
+.boot-step.is-error {
+  background: rgba(255, 69, 58, 0.08);
+  border-color: rgba(255, 69, 58, 0.4);
+}
+
+.boot-step-icon {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--dim);
+  transition: all 0.3s ease;
+  flex-shrink: 0;
+}
+.boot-step.is-active .boot-step-icon {
+  color: var(--accent);
+  animation: boot-spin 1.2s linear infinite;
+}
+.boot-step.is-done .boot-step-icon {
+  color: var(--success);
+}
+.boot-step.is-error .boot-step-icon {
+  color: var(--error);
+}
+
+@keyframes boot-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.boot-step-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text);
+  text-align: left;
+}
+.boot-step.is-done .boot-step-label {
+  color: var(--dim);
+}
+
+/* --- Edistymispalkki --- */
+.boot-progress {
+  width: 100%;
+  max-width: 320px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  margin-top: 12px;
+}
+.boot-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 12px rgba(0,194,255,0.7);
+  transition: width 0.4s cubic-bezier(0.3, 0.9, 0.3, 1);
+}
+
+@media (max-width: 500px) {
+  .boot-logo { width: 56px; height: 56px; font-size: 18px; }
+  .boot-title { font-size: 18px; letter-spacing: 3px; }
+  .boot-steps { min-width: 220px; }
+  .boot-step { padding: 6px 12px; }
 }
