@@ -1,0 +1,27 @@
+{
+  "name": "Flight Deck",
+  "short_name": "Flight Deck",
+  "description": "EFB · Lokikirja · Roster · METAR",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#060a15",
+  "theme_color": "#060a15",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "apple_mobile_web_app_status_bar_style": "black-translucent",
+  "apple_mobile_web_app_capable": true
+}

@@ -3059,3 +3059,66 @@ input[type="text"]:focus, textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==================================================================
+   Suosikkimiehistö
+   ================================================================== */
+.crew-fav-btn {
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.crew-fav-btn:hover {
+  border-color: var(--warning);
+  color: var(--warning);
+  background: rgba(255, 179, 0, 0.08);
+}
+.crew-fav-btn.is-fav {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: rgba(255, 179, 0, 0.12);
+  text-shadow: 0 0 8px rgba(255, 179, 0, 0.6);
+}
+.crew-fav-btn:active {
+  transform: scale(0.92);
+}
+
+/* Suosikki-badge viikkonäkymässä */
+.wv-flight-fav {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 5px;
+  background: rgba(255, 179, 0, 0.12);
+  border: 1px solid rgba(255, 179, 0, 0.4);
+  color: var(--warning);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  cursor: help;
+}
+
+.fr-suggestion-fav {
+  margin-top: 6px;
+  padding: 3px 10px;
+  display: inline-block;
+  border-radius: 6px;
+  background: rgba(255, 179, 0, 0.10);
+  border: 1px solid rgba(255, 179, 0, 0.35);
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-family: var(--font-ui);
+}

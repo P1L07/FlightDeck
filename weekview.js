@@ -282,6 +282,13 @@ function _wvRenderFlightCard(f) {
           <span class="wv-flight-reg">${_wvEsc(reg)}</span>
           <span class="wv-flight-sep">·</span>
           <span class="wv-flight-block">Block ${blockStr}</span>
+          ${(() => {
+            if (typeof getFlightFavorites !== 'function') return '';
+            const favs = getFlightFavorites(flightId);
+            if (!favs.length) return '';
+            const names = favs.map(getFavoriteFullName).join(', ');
+            return `<span class="wv-flight-fav" title="Suosikki: ${names}">⭐ ${favs.length}</span>`;
+          })()}
         </div>
       </div>
       <div class="wv-flight-actions">

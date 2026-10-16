@@ -3,13 +3,23 @@ const LOGBOOK_META_KEY    = 'easa_logbook_meta_v1';
 
 /* ---------------- Storage layer ---------------- */
 function _lbReadAll() {
+  // Jos DB on valmis → käytä muistia
+  if (typeof dbReadAll === 'function' && window.dbReadAll) {
+    return dbReadAll();
+  }
+  // Fallback localStorageen (ennen dbInit:iä)
   try {
     const raw = localStorage.getItem(LOGBOOK_STORAGE_KEY);
     const arr = raw ? JSON.parse(raw) : [];
     return Array.isArray(arr) ? arr : [];
   } catch (e) { return []; }
 }
+
 function _lbWriteAll(list) {
+  if (typeof dbReplaceAll === 'function' && window.dbReplaceAll) {
+    dbReplaceAll(list);
+    return;
+  }
   try { localStorage.setItem(LOGBOOK_STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
 }
 
@@ -36,10 +46,14 @@ if (typeof PDFLib === 'undefined') {
 
 function saveLogbookEntry(entry) {
   if (!entry || !entry.id) throw new Error("saveLogbookEntry: entry.id required");
-  const list = _lbReadAll();
-  const idx = list.findIndex(e => e.id === entry.id);
-  if (idx >= 0) list[idx] = entry; else list.push(entry);
-  _lbWriteAll(list);
+  if (typeof dbPutOne === 'function' && window.dbPutOne) {
+    dbPutOne(entry);
+  } else {
+    const list = _lbReadAll();
+    const idx = list.findIndex(e => e.id === entry.id);
+    if (idx >= 0) list[idx] = entry; else list.push(entry);
+    _lbWriteAll(list);
+  }
   if (typeof renderLogbookTable === 'function'
       && document.getElementById('logbook-container')) {
     renderLogbookTable();
@@ -52,7 +66,11 @@ function deleteLogbookEntry(id) {
   if (!entry) return;
   const label = entry.skyplan?.flightNumber || entry.date || 'kirjaus';
   if (!confirm(`Poista ${label} pysyvästi?`)) return;
-  _lbWriteAll(_lbReadAll().filter(e => e.id !== id));
+  if (typeof dbDeleteOne === 'function' && window.dbDeleteOne) {
+    dbDeleteOne(id);
+  } else {
+    _lbWriteAll(_lbReadAll().filter(e => e.id !== id));
+  }
   renderLogbookTable();
   if (typeof showToast === 'function') showToast('Kirjaus poistettu.', 'info');
 }
@@ -4920,4 +4938,36 @@ async function _promptSignAllModal(data) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     });
   });
+}
+
+const LOGBOOK_BACKUP_KEY = '_logbook_backup_meta';
+const BACKUP_INTERVAL_DAYS = 7;
+
+async function autoBackupLogbook() {
+  if (!navigator.onLine) return;
+
+  let meta = {};
+  try { meta = JSON.parse(localStorage.getItem(LOGBOOK_BACKUP_KEY) || '{}'); }
+  catch (e) {}
+
+  const last = meta.lastBackup ? new Date(meta.lastBackup).getTime() : 0;
+  const days = (Date.now() - last) / (24 * 60 * 60 * 1000);
+
+  if (days < BACKUP_INTERVAL_DAYS) return;
+
+  try {
+    if (typeof showToast === 'function') {
+      showToast('Varmuuskopioimaton data — muista viedä JSON.', 'info', 8000);
+    }
+  } catch (e) {}
+}
+window.autoBackupLogbook = autoBackupLogbook;
+
+// Aja kerran käynnistyksessä
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(autoBackupLogbook, 15000);
+  });
+} else {
+  setTimeout(autoBackupLogbook, 15000);
 }

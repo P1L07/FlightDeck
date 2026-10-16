@@ -424,6 +424,23 @@ async function renderFriendsView() {
     const fromStr = new Date(o.from).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const toStr   = new Date(o.to).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+    // Suosikkimiehistö samalla asemalla
+    let favCrewNames = [];
+    if (typeof getFlightFavorites === 'function') {
+      const seen = new Set();
+      (o.flights || []).forEach(f => {
+        const fid = String(f.ID || f.id || f.FlightID || '');
+        if (!fid) return;
+        getFlightFavorites(fid).forEach(fav => {
+          const full = getFavoriteFullName(fav);
+          if (!seen.has(full)) {
+            seen.add(full);
+            favCrewNames.push(full);
+          }
+        });
+      });
+    }
+
     suggestions.push({
       type: 'station',
       date: o.date,
@@ -432,7 +449,8 @@ async function renderFriendsView() {
       subtitle: `${fromStr} – ${toStr}`,
       members: names,
       station: o.station,
-      icon: '📍'
+      icon: '📍',
+      favCrew: favCrewNames
     });
   });
 
@@ -447,16 +465,23 @@ async function renderFriendsView() {
         Ei yhteisiä tapahtumia seuraavan 60 päivän aikana.
       </div>`;
   } else {
-    suggestionsHtml = suggestions.slice(0, 12).map(s => `
-      <div class="fr-suggestion fr-suggestion-${s.type}">
-        <div class="fr-suggestion-icon">${s.icon}</div>
-        <div class="fr-suggestion-body">
-          <div class="fr-suggestion-title">${_frEsc(s.title)}</div>
-          <div class="fr-suggestion-sub">${_frEsc(s.subtitle)}</div>
+    suggestionsHtml = suggestions.slice(0, 12).map(s => {
+      const favLine = (s.favCrew && s.favCrew.length)
+        ? `<div class="fr-suggestion-fav">⭐ ${_frEsc(s.favCrew.join(', '))}</div>`
+        : '';
+
+      return `
+        <div class="fr-suggestion fr-suggestion-${s.type}">
+          <div class="fr-suggestion-icon">${s.icon}</div>
+          <div class="fr-suggestion-body">
+            <div class="fr-suggestion-title">${_frEsc(s.title)}</div>
+            <div class="fr-suggestion-sub">${_frEsc(s.subtitle)}</div>
+            ${favLine}
+          </div>
+          <div class="fr-suggestion-date">${_frEsc(_frFmtDateFi(s.date))}</div>
         </div>
-        <div class="fr-suggestion-date">${_frEsc(_frFmtDateFi(s.date))}</div>
-      </div>
-    `).join('');
+      `;
+    }).join('');
   }
 
   // ---- KAVERIKORTIT ----

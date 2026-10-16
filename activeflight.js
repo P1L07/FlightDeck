@@ -1089,17 +1089,44 @@ async function showFlightCrewModal(flightId, flightNum, dateStr, depIcao, arrIca
       return { name, label, order: ROLE_ORDER[pos] || 9 };
     }).sort((a, b) => a.order - b.order);
 
+        // Hae raw crewDuty jotta staffId säilyy
+    const rawCrew = log.crewDuty;
+
     body.innerHTML = `
       <div class="bf-crew-list">
-        ${crewList.map(c => `
-          <div class="bf-crew-item">
-            <span class="bf-crew-role">${c.label}</span>
-            <span class="bf-crew-name">${c.name}</span>
-          </div>
-        `).join('')}
+        ${rawCrew.map(c => {
+          const pos = String(c.position || '').toUpperCase().trim();
+          const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.employeeId || '–';
+
+          let label = pos;
+          if (['CP','CAPT','PIC','P1'].includes(pos)) label = 'PIC';
+          else if (['FO','SIC','P2','SO'].includes(pos)) label = 'FO';
+          else if (['IS','IFS','PUR','PURSER','SCC','SCCM','CSD'].includes(pos)) label = 'IFS';
+          else if (['FY','FA','CABIN'].includes(pos)) label = 'CC';
+
+          const staffId = c.staffId || '';
+          const isFav = staffId && (typeof isFavoriteCrew === 'function') && isFavoriteCrew(staffId);
+          const safeFirst = String(c.firstName || '').replace(/'/g, "\\'");
+          const safeLast = String(c.lastName || '').replace(/'/g, "\\'");
+          const safePos = pos.replace(/'/g, "\\'");
+
+          return `
+            <div class="bf-crew-item">
+              <span class="bf-crew-role">${label}</span>
+              <span class="bf-crew-name">${name}</span>
+              ${staffId ? `
+                <button class="crew-fav-btn ${isFav ? 'is-fav' : ''}"
+                        data-fav-staff="${staffId}"
+                        onclick="toggleFavoriteFromBtn(this, '${staffId}', '${safeFirst}', '${safeLast}', '${safePos}')"
+                        title="${isFav ? 'Poista suosikeista' : 'Lisää suosikiksi'}">
+                  ${isFav ? '★' : '☆'}
+                </button>
+              ` : ''}
+            </div>`;
+        }).join('')}
       </div>
       <div style="font-size:11px; color:var(--dim); margin-top:12px; text-align:right;">
-        ${crewList.length} miehistön jäsentä
+        ${rawCrew.length} miehistön jäsentä
       </div>`;
   } catch (e) {
     console.warn('[Crew Modal]', e);

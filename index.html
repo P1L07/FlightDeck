@@ -7,10 +7,20 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#060a15">
-<title>Flight Deck</title>
-
+<title>FlightDeck</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="152x152" href="apple-touch-icon.png">
+<link rel="apple-touch-icon" sizes="167x167" href="apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
 
+<!-- Versiotarkastus -->
+<script src="version.js"></script>
+
+<!-- Muisti -->
+<script src="db.js"></script> 
 
 <!-- PDF-lib logikirjan generointiin -->
 <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
@@ -49,6 +59,9 @@
 <!-- Kaverit -->
 <script src="friends.js"></script>
 
+<!-- Suosikit -->
+<script src="favorites.js"></script>
+
 <!-- pdf.min -->
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 
@@ -57,6 +70,7 @@
 
 <!-- Pääsovellus -->
 <script src="app.js"></script>
+
 </head>
 <body>
 
@@ -291,11 +305,46 @@
       </div>
     </div>
     <div class="card">
-      <div class="card-label">KÄYTTÄJÄ</div>
-      <div class="kv"><span>Nimi</span><span id="settings-user">–</span></div>
-      <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
-      <div class="kv"><span>Versio</span><span>1.0.0 · iPad</span></div>
-    </div>
+  <div class="card-label">KÄYTTÄJÄ</div>
+  <div class="kv"><span>Nimi</span><span id="settings-user">–</span></div>
+  <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
+  <div class="kv">
+    <span>Versio</span>
+    <span id="settings-version" class="mono">–</span>
+  </div>
+  <div class="kv">
+    <span>Build</span>
+    <span id="settings-build" class="mono">–</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-label">LOKIKIRJAN VARMUUSKOPIO</div>
+  <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+    Vie lokikirja JSON-tiedostona iCloud Driveen tai Google Driveen.
+    Voit palauttaa sen myöhemmin millä tahansa laitteella.
+  </div>
+  <div class="row-flex">
+    <button class="btn-primary" onclick="exportLogbookJSON()">⬆ Vie iCloud / Drive</button>
+    <button class="btn-ghost" onclick="importLogbookJSON()">⬇ Palauta tiedostosta</button>
+  </div>
+  <div style="font-size:11px; color:var(--faint); margin-top:10px;">
+    Suositus: vie varmuuskopio viikoittain. JSON sisältää myös allekirjoitukset ja hash-ketjun.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-label">PÄIVITYS</div>
+  <div style="font-size:12.5px; color:var(--dim); line-height:1.5; margin-bottom:12px;">
+    Jos sovellus näyttää vanhaa versiota, pakota päivitys.
+    Tämä tyhjentää selaimen cachen mutta säilyttää tallennetun datan.
+  </div>
+  <div class="row-flex end">
+    <button class="btn-primary" onclick="forceAppRefresh()">
+      ⟳ Pakota päivitys
+    </button>
+  </div>
+</div>
 
     <div class="card">
       <div class="card-label">OFFLINE-VÄLIMUISTI</div>
@@ -355,6 +404,24 @@
  *   - tab-navigaatio, kello, online-tila
  *   - skyplan_token kentän esitäyttö
  * ------------------------------------------------------------------ */
+
+
+  // Alusta IndexedDB ennen kuin muu sovellus käyttää lokikirjaa
+  (async () => {
+    if (typeof dbInit === 'function') {
+      try {
+        await dbInit();
+        console.log('[Boot] IndexedDB valmis');
+        // Päivitä lokikirja-näkymä kun DB on ladannut
+        if (typeof renderLogbookTable === 'function') {
+          renderLogbookTable();
+        }
+      } catch (e) {
+        console.error('[Boot] dbInit epäonnistui:', e);
+      }
+    }
+  })();
+
 
 /* ---- Loader ---- */
 function showModalLoader(title, sub) {
@@ -501,6 +568,9 @@ function hydrateSettingsTab() {
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
     set('cache-roster-stat', `${Array.isArray(roster) ? roster.length : 0} lentoa`);
+    const setV = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    setV('settings-version', window.APP_VERSION || '–');
+    setV('settings-build', window.APP_BUILD || '–');
   } catch (e) {}
 }
 function saveTokenFromSettings() {

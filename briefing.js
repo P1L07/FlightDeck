@@ -423,33 +423,50 @@ async function _bfLoadCrew(flightId) {
       FY: 4, CABIN: 4, FA: 4
     };
 
-    const crewList = log.crewDuty.map(c => {
-      const pos = String(c.position || '').toUpperCase().trim();
-      const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.employeeId || '–';
+    const rowsHtml = log.crewDuty
+      .map(c => {
+        const pos = String(c.position || '').toUpperCase().trim();
+        const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.employeeId || '–';
 
-      // Näytettävä rooli-lyhenne
-      let label = pos;
-      if (['CP','CAPT','PIC','P1'].includes(pos)) label = 'PIC';
-      else if (['FO','SIC','P2','SO'].includes(pos)) label = 'FO';
-      else if (['IS','IFS','PUR','PURSER','SCC','SCCM','CSD'].includes(pos)) label = 'IFS';
-      else if (['FY','FA','CABIN'].includes(pos)) label = 'CC';   // Cabin Crew
+        let label = pos;
+        if (['CP','CAPT','PIC','P1'].includes(pos)) label = 'PIC';
+        else if (['FO','SIC','P2','SO'].includes(pos)) label = 'FO';
+        else if (['IS','IFS','PUR','PURSER','SCC','SCCM','CSD'].includes(pos)) label = 'IFS';
+        else if (['FY','FA','CABIN'].includes(pos)) label = 'CC';
 
-      const order = ROLE_ORDER[pos] || 9;
+        const order = ROLE_ORDER[pos] || 9;
+        const staffId = c.staffId || '';
+        const isFav = staffId && (typeof isFavoriteCrew === 'function') && isFavoriteCrew(staffId);
 
-      return { name, label, order, rawPos: pos };
-    }).sort((a, b) => a.order - b.order);
+        const safeFirst = String(c.firstName || '').replace(/'/g, "\\'");
+        const safeLast = String(c.lastName || '').replace(/'/g, "\\'");
+        const safePos = pos.replace(/'/g, "\\'");
 
-    const rowsHtml = crewList.map(c => `
-      <div class="bf-crew-item">
-        <span class="bf-crew-role">${_bfEsc(c.label)}</span>
-        <span class="bf-crew-name">${_bfEsc(c.name)}</span>
-      </div>
-    `).join('');
+        return {
+          name, label, order, rawPos: pos, staffId, isFav,
+          safeFirst, safeLast, safePos
+        };
+      })
+      .sort((a, b) => a.order - b.order)
+      .map(c => `
+        <div class="bf-crew-item">
+          <span class="bf-crew-role">${_bfEsc(c.label)}</span>
+          <span class="bf-crew-name">${_bfEsc(c.name)}</span>
+          ${c.staffId ? `
+            <button class="crew-fav-btn ${c.isFav ? 'is-fav' : ''}"
+                    data-fav-staff="${c.staffId}"
+                    onclick="toggleFavoriteFromBtn(this, '${c.staffId}', '${c.safeFirst}', '${c.safeLast}', '${c.safePos}')"
+                    title="${c.isFav ? 'Poista suosikeista' : 'Lisää suosikiksi'}">
+              ${c.isFav ? '★' : '☆'}
+            </button>
+          ` : ''}
+        </div>
+      `).join('');
 
     el.innerHTML = `
       <div class="bf-crew-list">${rowsHtml}</div>
       <div style="font-size:11px; color:var(--dim); margin-top:10px;">
-        ${crewList.length} miehistön jäsentä · Lähde: Skyplan journey-log
+        ${log.crewDuty.length} miehistön jäsentä · Lähde: Skyplan journey-log
       </div>`;
   } catch (e) {
     console.warn('[Briefing] Crew failed:', e);
