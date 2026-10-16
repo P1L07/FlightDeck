@@ -20,7 +20,6 @@
 <script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-<!-- Kartta: D3 + TopoJSON -->
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 
@@ -28,18 +27,20 @@
 <script src="version.js"></script>
 <script src="db.js"></script>
 
-<!-- 3. Sovellusinfra (createModal, fetchJourneyLog, loadAssignedFlights) -->
+<!-- 3. Sovellusinfra -->
 <script src="app.js"></script>
 
-<!-- 4. Lokikirja (käyttää app.js:n funktioita) -->
+<!-- 4. Lokikirja -->
 <script src="LogBook.js"></script>
 
+<!-- 4b. Lentokenttätietokanta (asentaa _icaoCoords-wrapperin) -->
+<script src="airport-db.js"></script>
+
 <!-- 5. Muut moduulit -->
-<script src="map.js"></script>   
-<script src="airport-db.js"></script> 
-<script src="ofp-parser.js"></script>
-<script src="ofp-data.js"></script>
-<script src="ofp-map.js"></script>
+<script src="map.js"></script>
+<script src="notam-parser.js"></script>
+<script src="notam-ofp.js"></script>
+<script src="notam-map.js"></script>
 <script src="weather.js"></script>
 <script src="weekview.js"></script>
 <script src="roster.js"></script>
@@ -56,7 +57,7 @@
 
 <body>
 
-  <!-- ============ Boot overlay ============ -->
+<!-- ============ Boot overlay ============ -->
 <div id="boot-overlay" class="boot-overlay">
   <div class="boot-inner">
     <div class="boot-logo">
@@ -140,48 +141,40 @@
 <!-- ============ Main content ============ -->
 <main class="content">
 
-  <!-- ========== HOME ========== -->
+  <!-- HOME -->
   <section class="tab-panel active" id="tab-home">
-  <!-- Aktiivinen lento (jos on) -->
-  <div id="active-flight-card" class="card card-accent af-card" style="display:none;"></div>
+    <div id="active-flight-card" class="card card-accent af-card" style="display:none;"></div>
 
-  <!-- MAAPALLO-KORTTI -->
-  <div class="home-map-card" id="home-map-card">
-    <div class="home-map-bg" id="fc-map"></div>
+    <div class="home-map-card" id="home-map-card">
+      <div class="home-map-bg" id="fc-map"></div>
 
-    <!-- Hero päällä -->
-    <div class="home-map-hero">
-      <div class="hero-greet">
-        <span class="greet-line">Hei,</span>
-        <span class="greet-name" id="user-name">Kapteeni</span>
+      <div class="home-map-hero">
+        <div class="hero-greet">
+          <span class="greet-line">Hei,</span>
+          <span class="greet-name" id="user-name">Kapteeni</span>
+        </div>
+        <div class="hero-status">
+          <span class="pulse-dot"></span>
+          <span id="duty-status">Valmiustilassa</span>
+        </div>
       </div>
-      <div class="hero-status">
-        <span class="pulse-dot"></span>
-        <span id="duty-status">Valmiustilassa</span>
-      </div>
-    </div>
 
-    <!-- Lennon tiedot alhaalla -->
-    <div class="home-map-overlay" id="home-map-overlay" style="display:none;"></div>
+      <div class="home-map-overlay" id="home-map-overlay" style="display:none;"></div>
 
-    <!-- Tyhjä-tila -->
-    <div class="home-map-empty" id="home-map-empty" style="display:none;">
-      <div style="font-size:32px; margin-bottom:8px;">✈</div>
-      <div style="font-weight:600; color:var(--text);">Ei tulevia lentoja</div>
-      <div style="font-size:12px; color:var(--dim); margin-top:6px;">
-        Synkkaa roster nähdäksesi seuraavan lennon
+      <div class="home-map-empty" id="home-map-empty" style="display:none;">
+        <div style="font-size:32px; margin-bottom:8px;">✈</div>
+        <div style="font-weight:600; color:var(--text);">Ei tulevia lentoja</div>
+        <div style="font-size:12px; color:var(--dim); margin-top:6px;">
+          Synkkaa roster nähdäksesi seuraavan lennon
+        </div>
       </div>
     </div>
-  </div>
+  </section>
 
-</section>
-
-  <!-- ========== FLIGHTS ========== -->
+  <!-- FLIGHTS -->
   <section class="tab-panel" id="tab-flights">
     <div class="section-head">
-      <div class="sh-left">
-        <h2>Lentotehtävät</h2>
-      </div>
+      <div class="sh-left"><h2>Lentotehtävät</h2></div>
       <div class="sh-right">
         <span class="badge-offline" id="assigned-cache-badge" style="display:none;">OFFLINE</span>
         <div class="view-toggle" id="flights-view-toggle">
@@ -226,7 +219,7 @@
     <div id="week-view-container" class="week-view" style="display:none;"></div>
   </section>
 
-  <!-- ========== BRIEFING ========== -->
+  <!-- BRIEFING -->
   <section class="tab-panel" id="tab-briefing">
     <div class="section-head">
       <h2>Lennon briefing</h2>
@@ -235,18 +228,16 @@
         <button class="btn-ghost" onclick="openBriefingOFP()">✈ Avaa OFP</button>
       </div>
     </div>
-    <div id="briefing-container">
-      <div class="empty">Ladataan…</div>
-    </div>
+    <div id="briefing-container"><div class="empty">Ladataan…</div></div>
   </section>
 
-  <!-- ========== FRIENDS ========== -->
+  <!-- FRIENDS -->
   <section class="tab-panel" id="tab-friends">
     <div class="section-head"><h2>Kaverit</h2></div>
     <div id="friends-container"><div class="empty">Ladataan…</div></div>
   </section>
 
-  <!-- ========== LOGBOOK ========== -->
+  <!-- LOGBOOK -->
   <section class="tab-panel" id="tab-logbook">
     <div class="section-head">
       <h2>Lokikirja <span class="muted">· EASA FCL.050</span></h2>
@@ -264,7 +255,7 @@
     </div>
   </section>
 
-  <!-- ========== WEATHER ========== -->
+  <!-- WEATHER -->
   <section class="tab-panel" id="tab-weather">
     <div class="section-head"><h2>Sää &amp; NOTAMit</h2></div>
     <div class="card">
@@ -282,7 +273,7 @@
     </div>
   </section>
 
-  <!-- ========== SETTINGS ========== -->
+  <!-- SETTINGS -->
   <section class="tab-panel" id="tab-settings">
     <div class="section-head"><h2>Asetukset</h2></div>
 
@@ -414,14 +405,12 @@
 <div id="toast-container" class="toast-container"></div>
 
 <!-- ================================================================
-     UI GLUE · täydentää app.js:n viittaamat funktiot
+     UI GLUE
      ================================================================ -->
 <script>
 'use strict';
 
-/* ==============================================================
- * LOADER
- * ============================================================== */
+/* LOADER */
 function showModalLoader(title, sub) {
   const el = document.getElementById('global-loader');
   if (!el) return;
@@ -439,9 +428,7 @@ function hideModalLoader() {
 window.showModalLoader = showModalLoader;
 window.hideModalLoader = hideModalLoader;
 
-/* ==============================================================
- * TOAST
- * ============================================================== */
+/* TOAST */
 function showToast(message, type = 'info', duration = 3200) {
   const container = document.getElementById('toast-container');
   if (!container) return;
@@ -462,9 +449,7 @@ function showToast(message, type = 'info', duration = 3200) {
 }
 window.showToast = showToast;
 
-/* ==============================================================
- * JWT DECODE
- * ============================================================== */
+/* JWT DECODE */
 function decodeJWT(token) {
   if (!token || typeof token !== 'string') return null;
   try {
@@ -485,9 +470,7 @@ function decodeJWT(token) {
 }
 window.decodeJWT = decodeJWT;
 
-/* ==============================================================
- * TAB-NAVIGAATIO
- * ============================================================== */
+/* TAB-NAVIGAATIO */
 function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.id === `tab-${tabId}`);
@@ -509,9 +492,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-/* ==============================================================
- * LIVE CLOCK
- * ============================================================== */
+/* LIVE CLOCK */
 function tickClock() {
   const el = document.getElementById('live-clock');
   if (!el) return;
@@ -523,9 +504,7 @@ function tickClock() {
 setInterval(tickClock, 1000);
 tickClock();
 
-/* ==============================================================
- * ONLINE / OFFLINE
- * ============================================================== */
+/* ONLINE / OFFLINE */
 function updateConnStatus() {
   const wrap = document.getElementById('conn-status');
   const label = document.getElementById('conn-label');
@@ -539,9 +518,7 @@ window.addEventListener('online', updateConnStatus);
 window.addEventListener('offline', updateConnStatus);
 updateConnStatus();
 
-/* ==============================================================
- * HYDRATE USER (JWT:stä)
- * ============================================================== */
+/* HYDRATE USER */
 async function hydrateUser() {
   const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null)
@@ -563,9 +540,7 @@ async function hydrateUser() {
 }
 window.hydrateUser = hydrateUser;
 
-/* ==============================================================
- * TOKEN STATUS · access tokenin vanheneminen
- * ============================================================== */
+/* TOKEN STATUS */
 function updateTokenStatus() {
   const el = document.getElementById('token-status');
   if (!el) return;
@@ -621,9 +596,7 @@ function updateTokenStatus() {
 }
 window.updateTokenStatus = updateTokenStatus;
 
-/* ==============================================================
- * REFRESH TOKEN STATUS
- * ============================================================== */
+/* REFRESH TOKEN STATUS */
 function updateRefreshTokenStatus() {
   const el = document.getElementById('refresh-token-status');
   const input = document.getElementById('skyplan_refresh_token_input');
@@ -636,12 +609,10 @@ function updateRefreshTokenStatus() {
     return;
   }
 
-  // Esitäytä textarea (näkyy mutta on muokattavissa)
   if (input && !input.value) input.value = rt;
 
   const payload = decodeJWT(rt);
 
-  // Riippumatta siitä voiko JWT:tä dekoodata — näytä että tallessa
   if (!payload || !payload.exp) {
     el.innerHTML = `
       <div style="color:var(--success); font-weight:700;">✓ Tallennettu</div>
@@ -707,9 +678,7 @@ function clearRefreshToken() {
 }
 window.clearRefreshToken = clearRefreshToken;
 
-/* ==============================================================
- * CERTIFICATION-ALLEKIRJOITUS · status
- * ============================================================== */
+/* CERTIFICATION-ALLEKIRJOITUS */
 function updateCertSigStatus() {
   const el = document.getElementById('cert-sig-status');
   if (!el) return;
@@ -731,17 +700,13 @@ function updateCertSigStatus() {
 }
 window.updateCertSigStatus = updateCertSigStatus;
 
-/* ==============================================================
- * SETTINGS HYDRATION
- * ============================================================== */
+/* SETTINGS HYDRATION */
 function hydrateSettingsTab() {
-  // Skyplan access token
   const tokenInput = document.getElementById('skyplan_token');
   if (tokenInput && !tokenInput.value) {
     tokenInput.value = localStorage.getItem('skyplan_token') || '';
   }
 
-  // Cache-tilastot
   try {
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
@@ -750,10 +715,7 @@ function hydrateSettingsTab() {
     set('settings-build', window.APP_BUILD || '–');
   } catch (e) {}
 
-  // Allekirjoitus
   if (typeof updateCertSigStatus === 'function') updateCertSigStatus();
-
-  // Token-tilat
   if (typeof updateTokenStatus === 'function') updateTokenStatus();
   if (typeof updateRefreshTokenStatus === 'function') updateRefreshTokenStatus();
 }
@@ -775,9 +737,7 @@ function saveTokenFromSettings() {
 }
 window.saveTokenFromSettings = saveTokenFromSettings;
 
-/* ==============================================================
- * TOPBAR TOKEN VAROITUS
- * ============================================================== */
+/* TOPBAR TOKEN VAROITUS */
 function updateTopbarTokenWarning() {
   const el = document.getElementById('token-warning');
   const timeEl = document.getElementById('token-warning-time');
@@ -797,7 +757,6 @@ function updateTopbarTokenWarning() {
     return;
   }
 
-  // Varoita jos alle 2 h
   if (diff < 2 * 60 * 60 * 1000) {
     const mins = Math.floor(diff / 60000);
     const h = Math.floor(mins / 60);
@@ -815,9 +774,7 @@ setInterval(() => {
   updateTopbarTokenWarning();
 }, 60 * 1000);
 
-/* ==============================================================
- * BOOT OVERLAY
- * ============================================================== */
+/* BOOT OVERLAY */
 const _boot = (() => {
   const overlay = () => document.getElementById('boot-overlay');
   const progressFill = () => document.getElementById('boot-progress-fill');
@@ -861,25 +818,26 @@ const _boot = (() => {
   function hide() {
     const el = overlay();
     if (!el) return;
-    // Varmista 100% ennen häivytystä
     const fill = progressFill();
     if (fill) fill.style.width = '100%';
     setTimeout(() => el.classList.add('is-hidden'), 400);
     setTimeout(() => el.remove(), 1200);
   }
 
-  // Aloita ensimmäinen vaihe aktiivisena
   setTimeout(() => setStep('db', 'active'), 100);
 
   return { setStep, setSub, hide };
 })();
 window._boot = _boot;
 
-/* ==============================================================
- * BOOT · aja kun kaikki funktiot on määritelty
- * ============================================================== */
+/* BOOT · DOMContentLoaded */
 document.addEventListener('DOMContentLoaded', async () => {
   const boot = window._boot;
+
+  const _bootSafety = setTimeout(() => {
+    console.warn('[Boot] Turvaverkko: pakotetaan overlay piiloon');
+    window._boot?.hide();
+  }, 10000);
 
   // 1. IndexedDB init
   if (typeof dbInit === 'function') {
@@ -896,28 +854,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     boot?.setStep('db', 'done');
   }
 
-  // 2. Käyttäjä + asetukset
+  // 2. Käyttäjä
   boot?.setStep('user', 'active');
   boot?.setSub('Loading user profile…');
-  await new Promise(r => setTimeout(r, 150));
+  await new Promise(r => setTimeout(r, 100));
   hydrateUser();
   hydrateSettingsTab();
   boot?.setStep('user', 'done');
 
-  // 3. Token-varoitus topbariin
+  // 3. Token-varoitus
   updateTopbarTokenWarning();
 
-  // 4. Lentokenttätietokanta (airport-db.js)
+  // 4. Lentokenttätietokanta — TAUSTALLA
   boot?.setStep('airports', 'active');
   boot?.setSub('Loading airports database…');
   if (typeof initAirportDB === 'function') {
-    try {
-      await initAirportDB();
-      boot?.setStep('airports', 'done');
-    } catch (e) {
-      console.warn('[Boot] Airport DB epäonnistui:', e);
-      boot?.setStep('airports', 'error');
-    }
+    initAirportDB()
+      .then(() => boot?.setStep('airports', 'done'))
+      .catch((e) => {
+        console.warn('[Boot] Airport DB epäonnistui:', e);
+        boot?.setStep('airports', 'error');
+      });
   } else {
     boot?.setStep('airports', 'done');
   }
@@ -928,7 +885,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   }
 
-  // 6. Rosterin autolataus
+  // 6. Roster
   boot?.setStep('roster', 'active');
   boot?.setSub('Fetching roster…');
   if (typeof autoLoadMonthRoster === 'function') {
@@ -939,15 +896,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       ]);
       boot?.setStep('roster', 'done');
     } catch (e) {
-      console.warn('[Boot] Roster epäonnistui tai aikakatkaistiin:', e);
-      boot?.setStep('roster', 'done');   // jatketaan silti
+      console.warn('[Boot] Roster timeout tai virhe:', e.message);
+      boot?.setStep('roster', 'done');
     }
   } else {
     boot?.setStep('roster', 'done');
   }
 
-  // 7. Kotisivun kartta
-    // 7. Kotisivun kartta — käynnistä taustalla, älä odota
+  // 7. Kotisivun kartta — TAUSTALLA
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
   if (typeof renderHomeDashboard === 'function') {
@@ -961,9 +917,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     boot?.setStep('map', 'done');
   }
 
-  // 8. Piilota overlay
+  // 8. Häivytys
+  clearTimeout(_bootSafety);
   boot?.setSub('Ready');
-  setTimeout(() => boot?.hide(), 300);
+  setTimeout(() => boot?.hide(), 800);
 });
 </script>
 </body>
