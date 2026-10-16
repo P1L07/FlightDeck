@@ -2878,14 +2878,10 @@ async function importLogbookJSON() {
                 : ''
             }.</p>
             <p style="color:var(--warning); font-weight:600;">
-              ⚠ Nykyinen lokikirja (${getLogbookEntries().length} kirjausta) korvataan kokonaan.
-            </p>
-            <p style="color:var(--dim); font-size:12px;">
-              Suositus: vie ensin nykyinen tila CSV:nä talteen.
+              ⚠ Nykyinen lokikirja (${_lbReadAll().length} kirjausta) korvataan kokonaan.
             </p>
           </div>`;
 
-        // Käytä olemassa olevaa createModal:ia
         const proceed = await new Promise((res) => {
           let done = false;
           const finish = (v) => { if (!done) { done = true; res(v); } };
@@ -2903,28 +2899,49 @@ async function importLogbookJSON() {
 
         if (!proceed) return resolve(false);
 
-        // Varmuuskopioi nykyinen tila automaattisesti ennen ylikirjoitusta
+        // Varmuuskopioi nykyinen tila automaattisesti
         try {
           const backup = {
             _meta: { auto: true, at: new Date().toISOString(), reason: 'before-import' },
-            entries: getLogbookEntries(),
-            auditLog: getAuditLog()
+            entries: _lbReadAll(),
+            auditLog: (() => {
+              try { return JSON.parse(localStorage.getItem('easa_logbook_audit_v1') || '[]'); }
+              catch (e) { return []; }
+            })()
           };
           localStorage.setItem('easa_logbook_autobackup_v1', JSON.stringify(backup));
         } catch (e) {}
 
-        // Kirjoita uusi data
-        localStorage.setItem('easa_logbook_v1', JSON.stringify(data.entries));
-        if (Array.isArray(data.auditLog)) {
-          localStorage.setItem('easa_logbook_audit_v1', JSON.stringify(data.auditLog));
+        /* ==================================================
+         * TÄRKEIN KOHTA: kirjoita INDEXEDDB:hen ensisijaisesti
+         * ================================================== */
+        if (typeof dbReplaceAll === 'function' && window.dbReplaceAll) {
+          console.log(`[JSON Import] Kirjoitetaan ${data.entries.length} kirjausta IndexedDB:hen`);
+          dbReplaceAll(data.entries);
+        } else {
+          // Fallback localStorageen
+          try {
+            localStorage.setItem('easa_logbook_v1', JSON.stringify(data.entries));
+          } catch (e) {
+            console.warn('[JSON Import] localStorage täynnä:', e.message);
+          }
         }
 
-        // Päivitä UI
-        if (typeof renderLogbookTable === 'function') renderLogbookTable();
-        if (typeof renderChainStatusBadge === 'function') renderChainStatusBadge();
+        // Audit-logi (pieni, mahtuu localStorageen)
+        if (Array.isArray(data.auditLog)) {
+          try {
+            localStorage.setItem('easa_logbook_audit_v1', JSON.stringify(data.auditLog));
+          } catch (e) {}
+        }
+
+        // Päivitä UI heti
+        setTimeout(() => {
+          if (typeof renderLogbookTable === 'function') renderLogbookTable();
+          if (typeof renderChainStatusBadge === 'function') renderChainStatusBadge();
+        }, 100);
 
         if (typeof showToast === 'function') {
-          showToast(`Palautettu ${data.entries.length} kirjausta.`, 'success');
+          showToast(`Palautettu ${data.entries.length} kirjausta.`, 'success', 5000);
         }
         resolve(true);
       } catch (err) {
@@ -2948,6 +2965,7 @@ async function importLogbookJSON() {
   });
 }
 window.importLogbookJSON = importLogbookJSON;
+
 
 /* ==============================================================
  * UI: vientimodaali
