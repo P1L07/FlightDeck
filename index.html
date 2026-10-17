@@ -691,7 +691,7 @@ function saveRefreshToken() {
   try {
     localStorage.setItem('skyplan_refresh_token', t);
     localStorage.setItem('skyplan_refresh_token_backup', t);   // ← backup
-    showToast('Refresh token tallennettu.', 'success');
+    showToast('Refresh token tallennettu', 'success');
     updateRefreshTokenStatus();
   } catch (e) {
     showToast('Tallennus epäonnistui.', 'error');
