@@ -704,6 +704,11 @@ if (showWeather && typeof window._notamWxGet === 'function') {
   let lastPanY = 0;
 
   const onPointerDown = (e) => {
+    // Ohita hiiren oikea nappi / keskinappi
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
     if (activePointers.size === 1) {
       lastPanX = e.clientX;
       lastPanY = e.clientY;
@@ -758,8 +763,8 @@ if (showWeather && typeof window._notamWxGet === 'function') {
     }
   };
 
-  container.addEventListener('pointerdown', onPointerDown);
-    /* ============ Hiiren rulla = zoom ============ */
+    container.addEventListener('pointerdown', onPointerDown);
+  /* ============ Hiiren rulla = zoom ============ */
   const onWheel = (e) => {
     // Estä sivun skrollaus vain kun kursori on kartan päällä
     e.preventDefault();
@@ -806,13 +811,13 @@ if (showWeather && typeof window._notamWxGet === 'function') {
   container.setAttribute('tabindex', '0');
   container.addEventListener('keydown', onKeyDown);
   container.style.outline = 'none';
-  container.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerUp);
-
+  
   container._mapCleanup = () => {
     container.removeEventListener('pointerdown', onPointerDown);
-    container.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
     container.removeEventListener('wheel', onWheel);
