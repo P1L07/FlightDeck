@@ -599,61 +599,72 @@ async function renderHomeDashboard() {
     }
   }
 
-  // Hae NOTAMit taustalla
-  let extraAirports = [];
+   // ============ RENDERÖI KARTTA HETI (ilman OFP-dataa) ============
+  const mapOpts = {
+    realistic: true,
+    showTimezones: true,
+    showWeather: true,
+    date: new Date(),
+    margin: 20,
+    onMarkerClick: (airport, evt) => {
+      const rect = cardEl.getBoundingClientRect();
+      const px = evt ? (evt.clientX - rect.left) : cardEl.clientWidth / 2;
+      const py = evt ? (evt.clientY - rect.top)  : cardEl.clientHeight / 2;
+      showAirportPopupInline(airport, { x: px, y: py }, cardEl, notamAirports);
+    }
+  };
   let notamAirports = [];
-  try {
-    if (typeof parseOFPsForNotams === 'function' && fid) {
-      const data = await parseOFPsForNotams(fid);
-      if (typeof buildAirportData === 'function') {
-        notamAirports = buildAirportData(data.notams, flight);
-        extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+  if (typeof renderFlightMap === 'function') {
+    renderFlightMap(mapEl, dep, arr, mapOpts);
+  }
+
+  // ============ Lataa OFP-data TAUSTALLA ============
+  // Ei await — kartta on jo näkyvissä
+  let extraAirports = [];
+  let waypointList = [];
+
+  (async () => {
+    try {
+      if (typeof parseOFPsForNotams === 'function' && fid) {
+        const data = await parseOFPsForNotams(fid);
+        if (typeof buildAirportData === 'function') {
+          notamAirports = buildAirportData(data.notams, flight);
+          extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+        }
+      }
+    } catch (e) {
+      const msg = String(e?.message || '');
+      if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
+        console.warn('[HomeMap] NOTAM parse failed:', e);
       }
     }
-  } catch (e) {
-    const msg = String(e?.message || '');
-    if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
-      console.warn('[HomeMap] NOTAM parse failed:', e);
-    }
-  }
 
-    // Waypointit (#12)
-  let waypointList = [];
-  try {
-    if (typeof parseOFPsForWaypoints === 'function' && fid) {
-      const wpData = await parseOFPsForWaypoints(fid);
-      waypointList = wpData.waypoints || [];
+    try {
+      if (typeof parseOFPsForWaypoints === 'function' && fid) {
+        const wpData = await parseOFPsForWaypoints(fid);
+        waypointList = wpData.waypoints || [];
+      }
+    } catch (e) {
+      const msg = String(e?.message || '');
+      if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
+        console.warn('[HomeMap] Waypoint parse failed:', e);
+      }
     }
-  } catch (e) {
-    const msg = String(e?.message || '');
-    if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
-      console.warn('[HomeMap] Waypoint parse failed:', e);
+
+    // Jos jotain saatiin, re-renderöi kartta
+    if (waypointList.length > 0 || extraAirports.length > 0) {
+      if (typeof renderFlightMap === 'function') {
+        renderFlightMap(mapEl, dep, arr, {
+          ...mapOpts,
+          extraAirports,
+          waypoints: waypointList
+        });
+      }
+      if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
+        _preloadWxForAirports(notamAirports).catch(() => {});
+      }
     }
-  }
-
-    // Esilataa WX taustalla (ei blokkaa renderöintiä)
-  if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
-    _preloadWxForAirports(notamAirports).catch(() => {});
-  }
-
-  // Renderöi kartta — KAIKKI optiot mukaan lukien waypointit
-  if (typeof renderFlightMap === 'function') {
-    renderFlightMap(mapEl, dep, arr, {
-      extraAirports,
-      waypoints: waypointList,       // ← tämä puuttui aiemmin
-      realistic: true,
-      showTimezones: true,
-      showWeather: true,
-      date: new Date(),
-      onMarkerClick: (airport, evt) => {
-        const rect = cardEl.getBoundingClientRect();
-        const px = evt ? (evt.clientX - rect.left) : cardEl.clientWidth / 2;
-        const py = evt ? (evt.clientY - rect.top)  : cardEl.clientHeight / 2;
-        showAirportPopupInline(airport, { x: px, y: py }, cardEl, notamAirports);
-      },
-      margin: 20
-    });
-  }
+  })();
 
   // DEP/DEST-nappien klikkaus → popup markerin kohdalle
   overlayEl.querySelectorAll('.hm-icao').forEach(btn => {

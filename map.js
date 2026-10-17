@@ -891,42 +891,77 @@ if (showWeather && typeof window._notamWxGet === 'function') {
     resetBtn.style.display = isUserInteracted ? 'flex' : 'none';
   }
 
-  // Animaatio
-    // ============ Animaatio ============
-  const SPEED = 0.13;
+  // ============ Animaatio — optimoitu (iPad-yhteensopiva) ============
+  // Tunnista mobiililaite
+  const _isMobile = /iPad|iPhone|iPod|Android/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  const SPEED              = 0.13;
+  const TARGET_FPS         = _isMobile ? 20 : 45;
+  const FRAME_INTERVAL_MS  = 1000 / TARGET_FPS;
+  const CONTRAIL_MAX       = _isMobile ? 10 : 24;
+  const CONTRAIL_SKIP      = _isMobile ? 3 : 1;    // päivitä joka 3. frame
+  const VISIBILITY_CHECK_EVERY = _isMobile ? 5 : 1;
+
+  let _lastAnimTime = 0;
+  let _frameCount = 0;
+  let _cachedRotCenter = null;
+  let _cachedIsVisible = true;
+
   const animate = (time) => {
-    if (!lastTime) lastTime = time;
-    const dt = (time - lastTime) / 1000;
-    lastTime = time;
+    // Rajoita frame rate
+    if (time - _lastAnimTime < FRAME_INTERVAL_MS) {
+      container._mapAnimation = requestAnimationFrame(animate);
+      return;
+    }
+    const dt = Math.min((time - _lastAnimTime) / 1000, 0.5);   // rajaa iso dt
+    _lastAnimTime = time;
+    _frameCount++;
+
+    // Ohita kokonaan jos tab ei aktiivinen
+    if (!document.querySelector('#tab-home.active')) {
+      container._mapAnimation = requestAnimationFrame(animate);
+      return;
+    }
 
     if (arcGeo && arcInterp && dep && arr && planeG) {
       pulseT = (pulseT + dt * SPEED) % 1;
       const pos = arcInterp(pulseT);
       const ahead = arcInterp(Math.min(pulseT + 0.008, 1));
       const proj = projection(pos);
-      const visible = isVisible(pos);
 
-      if (proj && isFinite(proj[0]) && visible) {
-        // Bearing suuntaa varten
+      // Cache rotaation keskikohta — päivitä vain harvoin
+      if (!_cachedRotCenter || _frameCount % VISIBILITY_CHECK_EVERY === 0) {
+        const rot = projection.rotate();
+        _cachedRotCenter = [-rot[0], -rot[1]];
+        _cachedIsVisible = d3.geoDistance(pos, _cachedRotCenter) < Math.PI / 2 - 0.02;
+      }
+
+      if (proj && isFinite(proj[0]) && _cachedIsVisible) {
         const bearing = _geoBearing(pos, ahead);
 
         planeG
-          .attr('transform', `translate(${proj[0]}, ${proj[1]}) rotate(${bearing})`)
+          .attr('transform',
+            `translate(${proj[0].toFixed(1)},${proj[1].toFixed(1)}) rotate(${bearing.toFixed(0)})`)
           .attr('opacity', 1);
 
-        // Perävanavesi
-        contrailPoints.push([proj[0], proj[1]]);
-        if (contrailPoints.length > 36) contrailPoints.shift();
-        contrailLine
-          .attr('points', contrailPoints.map(p => `${p[0]},${p[1]}`).join(' '))
-          .attr('opacity', 1);
+        // Perävanavesi — päivitä harvemmin
+        if (_frameCount % CONTRAIL_SKIP === 0) {
+          contrailPoints.push([proj[0], proj[1]]);
+          if (contrailPoints.length > CONTRAIL_MAX) contrailPoints.shift();
+          contrailLine
+            .attr('points',
+              contrailPoints.map(p => `${p[0].toFixed(0)},${p[1].toFixed(0)}`).join(' '))
+            .attr('opacity', 1);
+        }
       } else {
-        planeG.attr('opacity', 0);
+        if (planeG.attr('opacity') !== '0') planeG.attr('opacity', 0);
       }
     }
 
     container._mapAnimation = requestAnimationFrame(animate);
   };
+  _lastAnimTime = 0;
   container._mapAnimation = requestAnimationFrame(animate);
 
     /* ============ Apuri: hae markerin sijainti ============ */
