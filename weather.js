@@ -86,12 +86,42 @@ function _fmtWind(wdir, wspd, wgst) {
   return `${dir}° / ${spd}${gst} kt`;
 }
 
-function _fmtVis(visib) {
+function _fmtVis(visib, rawOb) {
+  // 1. Yritä parsia raw METARista (tarkin)
+  if (rawOb) {
+    // ICAO-metriformaatti: 4-numeroinen metreinä
+    const mMetric = rawOb.match(/\s(\d{4})\s/);
+    if (mMetric) {
+      const m = parseInt(mMetric[1], 10);
+      if (m === 9999) return '10+ km';
+      if (m === 0)    return '<50 m';
+      if (m < 1000)   return `${m} m`;
+      return `${(m / 1000).toFixed(1)} km`;
+    }
+    // US-formaatti: "10SM", "1 1/2SM", "1/2SM"
+    const mUS = rawOb.match(/\s(\d+(?:\s\d\/\d)?|\d\/\d)SM\s/);
+    if (mUS) {
+      const s = mUS[1].replace(/\s/g, '');
+      let sm = 0;
+      if (s.includes('/')) {
+        const [n, d] = s.split('/');
+        sm = parseInt(n, 10) / parseInt(d, 10);
+      } else {
+        sm = parseFloat(s);
+      }
+      return `${(sm * 1.609).toFixed(1)} km`;
+    }
+  }
+
+  // 2. Fallback: tulkitse visib-kenttä
   if (visib == null || visib === '') return '–';
   const n = parseFloat(visib);
   if (isNaN(n)) return String(visib);
   if (n >= 10) return '10+ km';
-  return `${n} km`;
+  // Yli 30 → todennäköisesti metrejä
+  if (n > 30) return `${(n / 1000).toFixed(1)} km`;
+  // 0–30 → statute milejä
+  return `${(n * 1.609).toFixed(1)} km`;
 }
 
 function _fmtClouds(clouds) {
@@ -152,7 +182,7 @@ function renderWeatherWidget(el, metar, taf) {
     </div>
     <div class="wx-grid">
       <div class="wx-cell"><span>Tuuli</span><b>${_fmtWind(metar.wdir, metar.wspd, metar.wgst)}</b></div>
-      <div class="wx-cell"><span>Näkyvyys</span><b>${_fmtVis(metar.visib)}</b></div>
+      <div class="wx-cell"><span>Näkyvyys</span><b>${_fmtVis(metar.visib, metar.rawOb)}</b></div>
       <div class="wx-cell"><span>Lämpötila</span><b>${_fmtTemp(metar.temp)}</b></div>
       <div class="wx-cell"><span>Kastepiste</span><b>${_fmtTemp(metar.dewp)}</b></div>
       <div class="wx-cell"><span>QNH</span><b>${metar.altim != null ? Math.round(metar.altim) + ' hPa' : '–'}</b></div>
@@ -296,6 +326,13 @@ function _findCurrentAndNextFlights() {
     .filter(x => x.std > now)
     .sort((a, b) => a.std - b.std)[0];
 
+  // Fallback: jos ei tulevaa/nykyistä, näytä viimeisin mennyt (offline-recovery)
+  if (!current && !upcoming && withTimes.length) {
+    const latestPast = withTimes.sort((a, b) => b.std - a.std)[0];
+    console.log('[Home] Fallback: käytetään viimeisintä lennoa', latestPast.f.FlightNumber);
+    return { current: latestPast.f, next: null };
+  }
+
   return { current: current?.f || null, next: upcoming?.f || null };
 }
 
@@ -376,8 +413,19 @@ function _flightCardHTML(f, opts = {}) {
 }
 
 async function renderHomeDashboard() {
+  // Tyhjennä edellinen stand-päivitys-intervalli
+  if (window._standRefreshTimer) {
+    clearInterval(window._standRefreshTimer);
+    window._standRefreshTimer = null;
+  }
+
   const { current, next } = _findCurrentAndNextFlights();
   const flight = current || next;
+
+  // Aktiivisen lennon kortti (säilyy)
+  if (typeof renderActiveFlightCard === 'function') {
+    renderActiveFlightCard().catch(() => {});
+  }
 
   const cardEl = document.getElementById('home-map-card');
   const mapEl = document.getElementById('fc-map');
@@ -430,10 +478,10 @@ async function renderHomeDashboard() {
         <span class="hm-info-label">Kone</span>
         <span class="hm-info-value">${reg}</span>
       </div>
-      ${stand ? `<div class="hm-info-item">
+      <div class="hm-info-item" id="hm-stand-item" ${stand ? '' : 'style="display:none;"'}>
         <span class="hm-info-label">Stand</span>
-        <span class="hm-info-value">${stand.value}</span>
-      </div>` : ''}
+        <span class="hm-info-value" id="hm-stand-value">${stand ? stand.value : '–'}</span>
+      </div>
     </div>
     ${countdownStr ? `<div class="hm-countdown">
       <span class="hm-countdown-label">Lähtöön</span>
@@ -486,6 +534,70 @@ async function renderHomeDashboard() {
   
   }
   overlayEl.style.display = 'flex';
+
+  // ============ Stand-päivitys automaattisesti jos online ============
+  if (navigator.onLine && typeof refreshSingleFlightFromRoster === 'function') {
+    // Välitön päivitys
+    (async () => {
+      try {
+        const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
+        if (!fresh) return;
+        const newStand = (typeof extractStandNumber === 'function')
+          ? extractStandNumber(fresh, null) : null;
+        const oldVal = stand ? stand.value : '';
+        if (newStand && newStand.value && newStand.value !== oldVal) {
+          console.log('[Stand] Päivitetty:', oldVal || '(tyhjä)', '→', newStand.value);
+          const valEl = document.getElementById('hm-stand-value');
+          const itemEl = document.getElementById('hm-stand-item');
+          if (valEl) valEl.textContent = newStand.value;
+          if (itemEl) itemEl.style.display = '';
+          // Päivitä cached roster
+          try {
+            const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+            const idx = roster.findIndex(x =>
+              String(x.ID || x.id || x.FlightID) === String(fid));
+            if (idx >= 0) {
+              roster[idx] = { ...roster[idx], ...fresh };
+              localStorage.setItem('assigned_flights_cache', JSON.stringify(roster));
+            }
+          } catch (e) {}
+        }
+      } catch (e) {
+        console.warn('[Stand] refresh failed:', e);
+      }
+    })();
+
+    // Ajoitettu päivitys — vain jos lento on aktiivinen
+    const stdMs = new Date(flight.StdLt || flight.Std || 0).getTime();
+    const staMs = new Date(flight.StaLt || flight.Sta || 0).getTime();
+    const now = Date.now();
+    const isActive = now >= stdMs - 30 * 60 * 1000 && now <= staMs + 30 * 60 * 1000;
+
+    if (isActive) {
+      window._standRefreshTimer = setInterval(async () => {
+        if (!navigator.onLine) return;
+        if (!document.querySelector('#tab-home.active')) return;
+
+        try {
+          const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
+          if (!fresh) return;
+          const newStand = (typeof extractStandNumber === 'function')
+            ? extractStandNumber(fresh, null) : null;
+          if (!newStand || !newStand.value) return;
+
+          const valEl = document.getElementById('hm-stand-value');
+          const itemEl = document.getElementById('hm-stand-item');
+          if (valEl && valEl.textContent !== newStand.value) {
+            console.log('[Stand] Aikapäivitys:', valEl.textContent, '→', newStand.value);
+            valEl.textContent = newStand.value;
+            if (itemEl) itemEl.style.display = '';
+          }
+        } catch (e) {
+          console.warn('[Stand] interval failed:', e);
+        }
+      }, 15 * 60 * 1000);
+    }
+  }
 
   // Hae NOTAMit taustalla
   let extraAirports = [];
@@ -560,6 +672,24 @@ async function renderHomeDashboard() {
   });
 }
 window.renderHomeDashboard = renderHomeDashboard;
+
+  // ============ Countdown-päivitys ============
+  if (window._homeCountdownTimer) clearInterval(window._homeCountdownTimer);
+  const stdMsFinal = new Date(flight.StdLt || flight.Std || 0).getTime();
+  window._homeCountdownTimer = setInterval(() => {
+    const el = document.querySelector('.hm-countdown-value');
+    if (!el) return;
+    const diff = stdMsFinal - Date.now();
+    if (diff <= 0) {
+      el.textContent = 'LÄHTÖ';
+      return;
+    }
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    el.textContent = h > 0
+      ? `${h}h ${String(m).padStart(2, '0')}m`
+      : `${m} min`;
+  }, 30000);   // päivitä 30 s välein
 
 /* ==============================================================
  * Kartan sisäinen popup (DEP/DEST/ALTN/NOTAM)

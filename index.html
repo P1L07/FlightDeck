@@ -147,7 +147,7 @@
 
   <!-- HOME -->
   <section class="tab-panel active" id="tab-home">
-
+    <div id="active-flight-card" class="card card-accent af-card" style="display:none;"></div>
 
     <div class="home-map-card" id="home-map-card">
       <div class="home-map-bg" id="fc-map"></div>
@@ -524,9 +524,16 @@ updateConnStatus();
 
 /* HYDRATE USER */
 async function hydrateUser() {
-  const token = (typeof getValidSkyplanToken === 'function')
-    ? await getValidSkyplanToken().catch(() => null)
-    : localStorage.getItem('skyplan_token');
+  let token = null;
+  if (typeof getValidSkyplanToken === 'function') {
+    try {
+      token = await getValidSkyplanToken();
+    } catch (e) {
+      console.warn('[Boot] Token refresh failed, using cached:', e.message);
+    }
+  }
+  // Offline-fallback: käytä raakaa localStorage-tokenia
+  if (!token) token = localStorage.getItem('skyplan_token');
   if (!token) return;
 
   const payload = decodeJWT(token) || {};
@@ -606,10 +613,29 @@ function updateRefreshTokenStatus() {
   const input = document.getElementById('skyplan_refresh_token_input');
   if (!el) return;
 
-  const rt = localStorage.getItem('skyplan_refresh_token');
+  let rt = localStorage.getItem('skyplan_refresh_token');
+
+  // Jos ensisijainen avain on tyhjä, yritä backupia
   if (!rt) {
+    rt = localStorage.getItem('skyplan_refresh_token_backup');
+    if (rt) {
+      try { localStorage.setItem('skyplan_refresh_token', rt); } catch (e) {}
+    }
+  }
+
+  // Jos yhä tyhjä mutta input-kentässä on token → palauta se
+  if (!rt) {
+    const fromInput = (input?.value || '').trim();
+    if (fromInput.length > 50) {
+      console.log('[Token] Palautetaan input-kentästä localStorageen');
+      try {
+        localStorage.setItem('skyplan_refresh_token', fromInput);
+        localStorage.setItem('skyplan_refresh_token_backup', fromInput);
+      } catch (e) {}
+      el.innerHTML = '<span style="color:var(--warning);">⚠️ Palautettu input-kentästä</span>';
+      return;
+    }
     el.innerHTML = '<span style="color:var(--dim);">Ei refresh tokenia</span>';
-    if (input) input.value = '';
     return;
   }
 
@@ -664,6 +690,7 @@ function saveRefreshToken() {
   if (t.length < 50) { showToast('Refresh token näyttää liian lyhyeltä.', 'warning'); return; }
   try {
     localStorage.setItem('skyplan_refresh_token', t);
+    localStorage.setItem('skyplan_refresh_token_backup', t);   // ← backup
     showToast('Refresh token tallennettu.', 'success');
     updateRefreshTokenStatus();
   } catch (e) {
@@ -674,7 +701,10 @@ window.saveRefreshToken = saveRefreshToken;
 
 function clearRefreshToken() {
   if (!confirm('Poista refresh token?')) return;
-  try { localStorage.removeItem('skyplan_refresh_token'); } catch (e) {}
+  try {
+    localStorage.removeItem('skyplan_refresh_token');
+    localStorage.removeItem('skyplan_refresh_token_backup');
+  } catch (e) {}
   const input = document.getElementById('skyplan_refresh_token_input');
   if (input) input.value = '';
   updateRefreshTokenStatus();

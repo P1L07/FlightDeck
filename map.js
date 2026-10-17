@@ -704,8 +704,6 @@ if (showWeather && typeof window._notamWxGet === 'function') {
   let lastPanY = 0;
 
   const onPointerDown = (e) => {
-    try { container.setPointerCapture(e.pointerId); } catch (err) {}
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (activePointers.size === 1) {
       lastPanX = e.clientX;
       lastPanY = e.clientY;
@@ -872,6 +870,7 @@ if (showWeather && typeof window._notamWxGet === 'function') {
   resetBtn.title = 'Palauta näkymä';
   resetBtn.innerHTML = '⟳';
   resetBtn.style.display = 'none';
+  const host = container.parentElement || container;
   container.appendChild(resetBtn);
   resetBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   resetBtn.addEventListener('click', (e) => {

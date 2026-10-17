@@ -1,11 +1,6 @@
 /* ==================================================================
    FLIGHT DECK · iPad UI
    ================================================================== */
-/* Aktiivinen lento -kortti — ei enää käytössä */
-#active-flight-card,
-.af-card {
-  display: none !important;
-}
 
 /* -------- Design tokens -------- */
 :root {
@@ -3499,7 +3494,7 @@ input[type="text"]:focus, textarea:focus {
   font-size: 16px;
   font-weight: 700;
   cursor: pointer;
-  z-index: 10;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: center;

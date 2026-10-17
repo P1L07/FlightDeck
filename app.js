@@ -263,6 +263,63 @@ async function fetchFlightIdFromRoster(flightDateStr, flightNumberRaw, depIcaoRa
 window.fetchFlightIdFromRoster = fetchFlightIdFromRoster;
 
 /* ==============================================================
+ * REFRESH SINGLE FLIGHT · hakee yhden lennon tuoreet tiedot
+ * ==============================================================
+ * Käytetään aktiivisen lennon stand-päivitykseen.
+ * Palauttaa tuoreen flight-objektin tai null.
+ * ============================================================== */
+async function refreshSingleFlightFromRoster(fid, stdIso) {
+  if (!fid || !navigator.onLine) return null;
+
+  try {
+    const token = await getValidSkyplanToken().catch(() => null);
+    if (!token) return null;
+
+    let empId = null;
+    if (typeof decodeJWT === 'function') {
+      const emp = decodeJWT(token) || {};
+      empId = emp.employeeid || emp.EmployeeID || emp.employeeId
+           || emp.nameid || emp.sub;
+    }
+    if (!empId) return null;
+
+    const stdDate = stdIso ? new Date(stdIso) : new Date();
+    const from = new Date(stdDate.getTime() - 2 * 24 * 3600 * 1000);
+    const to   = new Date(stdDate.getTime() + 2 * 24 * 3600 * 1000);
+
+    const fmt = (d) =>
+      `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+    const resp = await fetch('https://kcskyplanapi.airastana.com/api/v1/crew-roster-flights-details', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        EmployeeID: String(empId),
+        From: fmt(from),
+        To: fmt(to)
+      })
+    });
+
+    if (!resp.ok) {
+      console.warn('[RefreshFlight] HTTP', resp.status);
+      return null;
+    }
+    const data = await resp.json();
+    const flights = Array.isArray(data.Flights) ? data.Flights : [];
+    return flights.find(f =>
+      String(f.ID || f.id || f.FlightID) === String(fid)
+    ) || null;
+  } catch (e) {
+    console.warn('[RefreshFlight] error:', e);
+    return null;
+  }
+}
+window.refreshSingleFlightFromRoster = refreshSingleFlightFromRoster;
+
+/* ==============================================================
  * TOKEN MODAL · käyttäjä liittää uuden tokenin
  * ============================================================== */
 function promptForTokenModal() {
@@ -425,7 +482,8 @@ async function _refreshSkyplanToken(refreshToken) {
 
       if (resp.status === 401 || resp.status === 403) {
         console.warn('[Token] Refresh hylätty (HTTP ' + resp.status + ')');
-        try { localStorage.removeItem('skyplan_refresh_token'); } catch (e) {}
+        // HUOM: EI poisteta refresh tokenia. Käyttäjä voi poistaa sen
+        // manuaalisesti Settings-sivulta, tai se korvataan kun uusi token saadaan.
         return null;
       }
 
@@ -447,6 +505,7 @@ async function _refreshSkyplanToken(refreshToken) {
         localStorage.setItem('skyplan_token', newAccess);
         if (newRefresh) {
           localStorage.setItem('skyplan_refresh_token', newRefresh);
+          localStorage.setItem('skyplan_refresh_token_backup', newRefresh);
           console.log('[Token] ✓ Access + uusi Refresh tallennettu');
         } else {
           console.log('[Token] ✓ Access tallennettu');
@@ -473,7 +532,14 @@ window._refreshSkyplanToken = _refreshSkyplanToken;
  * ============================================================== */
 window.getValidSkyplanToken = async function() {
   if (!navigator.onLine) {
-    console.log('[Token] Offline — ei yritetä hakea tokenia');
+    console.log('[Token] Offline — palautetaan cached access token');
+    // Palautetaan välimuistiin tallennettu token. Verkkopyynnöt epäonnistuvat
+    // joka tapauksessa offline-tilassa, mutta tämä mahdollistaa sen että
+    // sovellus näkee tokenin olevan olemassa.
+    try {
+      const cached = localStorage.getItem('skyplan_token');
+      if (cached && cached.length > 20) return cached;
+    } catch (e) {}
     return null;
   }
 
@@ -523,6 +589,15 @@ window.getValidSkyplanToken = async function() {
   try {
     token = localStorage.getItem('skyplan_token');
     refreshToken = localStorage.getItem('skyplan_refresh_token');
+    // Fallback backup-avaimeen
+    if (!refreshToken) {
+      const backup = localStorage.getItem('skyplan_refresh_token_backup');
+      if (backup) {
+        console.log('[Token] Palautettu backup-avaimeesta');
+        refreshToken = backup;
+        try { localStorage.setItem('skyplan_refresh_token', backup); } catch (e) {}
+      }
+    }
   } catch (e) {
     console.warn("localStorage access restricted:", e);
   }

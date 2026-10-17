@@ -153,8 +153,11 @@ async function _downloadAirportsCSV() {
   } finally {
     clearTimeout(timeout);
   }
-  if (!resp.ok) throw new Error(`CSV HTTP ${resp.status}`);
-  const text = await resp.text();
+   if (!resp.ok) throw new Error(`CSV HTTP ${resp.status}`);
+  let text = await resp.text();
+
+  // Poista BOM-merkki (OurAirports CSV alkaa sillä)
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
 
   const lines = text.split('\n');
   const header = lines[0].split(',');
