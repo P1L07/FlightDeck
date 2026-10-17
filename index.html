@@ -38,13 +38,9 @@
 
 <!-- 5. Muut moduulit -->
 <script src="map.js"></script>
-<script src="logbook.js"></script>
-<script src="airport-db.js"></script>
-<script src="map.js"></script>
 <script src="ofp-parser.js"></script>
 <script src="ofp-data.js"></script>
 <script src="ofp-map.js"></script>
-<script src="weather.js"></script>
 <script src="weather.js"></script>
 <script src="weekview.js"></script>
 <script src="roster.js"></script>
@@ -381,6 +377,19 @@
       <div class="kv"><span>OFP:t</span><span id="cache-ofp-stat">–</span></div>
       <div class="kv"><span>Lokikirja</span><span id="cache-lb-stat">–</span></div>
     </div>
+
+    <div class="card">
+      <div class="card-label">KARTAN VISUAALISET OMINAISUUDET</div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
+        Kytke päälle/pois haluamasi visuaaliset elementit. Jos kartta on hidas,
+        kokeile poistaa elementtejä yksitellen ja katso mikä auttaa.
+      </div>
+      <div id="map-features-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+      <div class="row-flex end" style="margin-top:12px;">
+        <button class="btn-ghost" onclick="resetMapFeaturesUI()">Palauta oletukset</button>
+        <button class="btn-primary" onclick="applyMapFeaturesUI()">Tallenna ja päivitä</button>
+      </div>
+    </div>
   </section>
 
 </main>
@@ -615,7 +624,6 @@ function updateRefreshTokenStatus() {
 
   let rt = localStorage.getItem('skyplan_refresh_token');
 
-  // Jos ensisijainen avain on tyhjä, yritä backupia
   if (!rt) {
     rt = localStorage.getItem('skyplan_refresh_token_backup');
     if (rt) {
@@ -623,7 +631,6 @@ function updateRefreshTokenStatus() {
     }
   }
 
-  // Jos yhä tyhjä mutta input-kentässä on token → palauta se
   if (!rt) {
     const fromInput = (input?.value || '').trim();
     if (fromInput.length > 50) {
@@ -690,7 +697,7 @@ function saveRefreshToken() {
   if (t.length < 50) { showToast('Refresh token näyttää liian lyhyeltä.', 'warning'); return; }
   try {
     localStorage.setItem('skyplan_refresh_token', t);
-    localStorage.setItem('skyplan_refresh_token_backup', t);   // ← backup
+    localStorage.setItem('skyplan_refresh_token_backup', t);
     showToast('Refresh token tallennettu', 'success');
     updateRefreshTokenStatus();
   } catch (e) {
@@ -752,8 +759,64 @@ function hydrateSettingsTab() {
   if (typeof updateCertSigStatus === 'function') updateCertSigStatus();
   if (typeof updateTokenStatus === 'function') updateTokenStatus();
   if (typeof updateRefreshTokenStatus === 'function') updateRefreshTokenStatus();
+  if (typeof renderMapFeaturesUI === 'function') renderMapFeaturesUI();
 }
 window.hydrateSettingsTab = hydrateSettingsTab;
+
+/* MAP FEATURES UI */
+const MAP_FEATURE_LABELS = {
+  stars:          { label: 'Tähtitaivas',            desc: 'Taustan tähdet' },
+  atmosphere:     { label: 'Atmosfääri-hehku',       desc: 'Pallon sininen reuna (blur)' },
+  timezones:      { label: 'Aikavyöhykeviivat',      desc: '15° välein' },
+  terminator:     { label: 'Päivä/yö-terminaattori', desc: 'Yöpuolen tummennus' },
+  cities:         { label: 'Kaupunkien yövalot',     desc: 'Keltaiset pisteet' },
+  waypoints:      { label: 'Waypoint-pisteet',       desc: 'Reitin varren pisteet' },
+  waypointLabels: { label: 'Waypoint-nimet',         desc: 'Näkyvät zoomatessa' },
+  airportNames:   { label: 'Kenttien nimet',         desc: 'ICAO:n alla' },
+  weatherMarkers: { label: 'Säämerkit',              desc: 'VFR/MVFR/IFR/LIFR' }
+};
+
+function renderMapFeaturesUI() {
+  const container = document.getElementById('map-features-list');
+  if (!container) return;
+  const features = (typeof getMapFeatures === 'function') ? getMapFeatures() : {};
+  container.innerHTML = Object.entries(MAP_FEATURE_LABELS).map(([key, info]) => `
+    <label style="display:flex; align-items:center; gap:10px; padding:10px 12px;
+                  background:var(--input); border:1px solid var(--border); border-radius:8px;
+                  cursor:pointer; user-select:none;">
+      <input type="checkbox" data-feature="${key}" ${features[key] ? 'checked' : ''}
+             style="width:18px; height:18px; accent-color:var(--accent);">
+      <span style="flex:1;">
+        <span style="display:block; font-weight:600; color:var(--text); font-size:13px;">${info.label}</span>
+        <span style="display:block; font-size:11px; color:var(--dim);">${info.desc}</span>
+      </span>
+    </label>
+  `).join('');
+}
+
+function applyMapFeaturesUI() {
+  const inputs = document.querySelectorAll('[data-feature]');
+  const features = {};
+  inputs.forEach(inp => { features[inp.dataset.feature] = inp.checked; });
+  if (typeof setMapFeatures === 'function') setMapFeatures(features);
+  if (typeof showToast === 'function') showToast('Kartta-asetukset tallennettu.', 'success');
+  if (typeof renderHomeDashboard === 'function') {
+    renderHomeDashboard().catch(() => {});
+  }
+}
+
+function resetMapFeaturesUI() {
+  if (typeof resetMapFeatures === 'function') resetMapFeatures();
+  renderMapFeaturesUI();
+  if (typeof showToast === 'function') showToast('Palautettu oletuksiin.', 'info');
+  if (typeof renderHomeDashboard === 'function') {
+    renderHomeDashboard().catch(() => {});
+  }
+}
+
+window.renderMapFeaturesUI = renderMapFeaturesUI;
+window.applyMapFeaturesUI = applyMapFeaturesUI;
+window.resetMapFeaturesUI = resetMapFeaturesUI;
 
 function saveTokenFromSettings() {
   const input = document.getElementById('skyplan_token');
