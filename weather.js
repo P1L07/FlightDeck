@@ -661,17 +661,12 @@ async function renderHomeDashboard() {
       e.stopPropagation();
       const icao = btn.dataset.icao;
       const apt = _findAirportForIcao(icao, flight, notamAirports);
-
-      // Hae markerin sijainti kartalta
       const pos = mapEl._getMarkerPosition ? mapEl._getMarkerPosition(icao) : null;
       const px = pos ? pos.x : cardEl.clientWidth - 200;
       const py = pos ? pos.y : cardEl.clientHeight / 2;
-
       showAirportPopupInline(apt, { x: px, y: py }, cardEl, notamAirports);
     });
   });
-}
-window.renderHomeDashboard = renderHomeDashboard;
 
   // ============ Countdown-päivitys ============
   if (window._homeCountdownTimer) clearInterval(window._homeCountdownTimer);
@@ -690,6 +685,8 @@ window.renderHomeDashboard = renderHomeDashboard;
       ? `${h}h ${String(m).padStart(2, '0')}m`
       : `${m} min`;
   }, 30000);   // päivitä 30 s välein
+}
+window.renderHomeDashboard = renderHomeDashboard;
 
 /* ==============================================================
  * Kartan sisäinen popup (DEP/DEST/ALTN/NOTAM)
