@@ -198,8 +198,26 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
 
   await new Promise(r => requestAnimationFrame(r));
 
-  const width  = container.clientWidth || 400;
-  const height = container.clientHeight || Math.min(240, Math.round(width * 0.55));
+// Käytä viewportin kokoa fallbackina — koska .home-map-card on
+// position: fixed; inset: 0, sen koko on aina viewportin koko
+// kun se on näkyvissä. Jos container on piilotettu (display: none),
+// clientWidth on 0 mutta window.innerWidth on silti oikea.
+let width  = container.clientWidth  || window.innerWidth  || 400;
+let height = container.clientHeight || window.innerHeight || 240;
+
+// Jos ollaan epäilyttävän pieniä (esim. juuri renderöity, layout ei valmis),
+// yritä mitata uudelleen seuraavassa framessa
+if (width < 100 || height < 100) {
+  await new Promise(r => requestAnimationFrame(r));
+  width  = container.clientWidth  || window.innerWidth  || 400;
+  height = container.clientHeight || window.innerHeight || 240;
+}
+
+if (width < 100 || height < 100) {
+  // Ei voida mitata — älä renderöi tyhjää SVG:tä
+  container.innerHTML = '';
+  return;
+}
   const margin = options.margin != null ? options.margin : 14;
 
   // Keskipiste
@@ -800,13 +818,18 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   container.addEventListener('keydown', onKeyDown);
   container.style.outline = 'none';
 
-  container._mapCleanup = () => {
+    container._mapCleanup = () => {
     container.removeEventListener('pointerdown', onPointerDown);
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
     container.removeEventListener('wheel', onWheel);
     container.removeEventListener('keydown', onKeyDown);
+
+    // Poista reset-nappi isäntäkortista
+    try {
+      if (resetBtn.parentElement) resetBtn.parentElement.removeChild(resetBtn);
+    } catch (e) {}
   };
 
   // ============ Päivitys ============
@@ -833,14 +856,18 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
     });
   }
 
-  // Reset-nappi
+    // Reset-nappi — lisää isäntäkorttiin, ei itse karttaan
+  // (kartan sisällä nappi jäisi overlayn alle z-indexin takia)
   const resetBtn = document.createElement('button');
   resetBtn.className = 'map-reset-btn';
   resetBtn.type = 'button';
   resetBtn.title = 'Palauta näkymä';
   resetBtn.innerHTML = '⟳';
   resetBtn.style.display = 'none';
-  container.appendChild(resetBtn);
+
+  const resetHost = container.parentElement || container;
+  resetHost.appendChild(resetBtn);
+
   resetBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   resetBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -868,6 +895,18 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   container._markerClickCallbacks = [];
   container._onMarkerClick = (fn) => {
     container._markerClickCallbacks.push(fn);
+  };
+
+  // Tallenna renderöintiparametrit resizea varten
+  container._lastFlight = {
+    dep: depIcao,
+    arr: arrIcao,
+    options: {
+      ...options,
+      // Poista funktiot jotka viittaavat vanhaan DOMiin (cardEl, notamAirports)
+      // jotta resize ei käytä vanhentuneita viittauksia
+      onMarkerClick: options.onMarkerClick
+    }
   };
 }
 window.renderFlightMap = renderFlightMap;

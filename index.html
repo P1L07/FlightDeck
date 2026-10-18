@@ -31,7 +31,7 @@
 <script src="app.js"></script>
 
 <!-- 4. Lokikirja -->
-<script src="LogBook.js"></script>
+<script src="logbook.js"></script>
 
 <!-- 4b. Lentokenttätietokanta (asentaa _icaoCoords-wrapperin) -->
 <script src="airport-db.js"></script>
@@ -46,7 +46,7 @@
 <script src="roster.js"></script>
 <script src="audit.js"></script>
 <script src="offline.js"></script>
-<script src="activeflight.js"></script>
+<script src="flight-utils.js"></script>
 <script src="friends.js"></script>
 <script src="favorites.js"></script>
 <script src="defects.js"></script>
@@ -176,34 +176,11 @@
       <div class="sh-left"><h2>Lentotehtävät</h2></div>
       <div class="sh-right">
         <span class="badge-offline" id="assigned-cache-badge" style="display:none;">OFFLINE</span>
-        <div class="view-toggle" id="flights-view-toggle">
-          <button class="vt-btn active" data-view="table" onclick="setFlightsView('table')">
-            <span class="vt-icon">☰</span><span>Taulukko</span>
-          </button>
-          <button class="vt-btn" data-view="week" onclick="setFlightsView('week')">
-            <span class="vt-icon">▦</span><span>Viikko</span>
-          </button>
-        </div>
       </div>
     </div>
 
     <div class="toolbar">
-      <div class="toolbar-content" id="toolbar-table">
-        <div class="toolbar-search">
-          <span class="search-icon">⌕</span>
-          <input type="text" id="assigned-search-text"
-                 placeholder="Hae lentoa, reittiä, rekisteriä…"
-                 oninput="filterAssignedFlightsTable()">
-        </div>
-        <div class="toolbar-dates">
-          <input type="date" id="assigned-date-from">
-          <span class="date-sep">→</span>
-          <input type="date" id="assigned-date-to">
-        </div>
-        <button class="btn-primary" onclick="loadAssignedFlights(true, true)">Hae</button>
-      </div>
-
-      <div class="toolbar-content" id="toolbar-week" style="display:none;">
+      <div class="toolbar-content" id="toolbar-week">
         <button class="wk-nav-btn" onclick="weekViewPrev()" title="Edellinen viikko">←</button>
         <div class="wk-label" id="wk-label">–</div>
         <button class="wk-nav-btn" onclick="weekViewNext()" title="Seuraava viikko">→</button>
@@ -211,11 +188,12 @@
       </div>
     </div>
 
-    <div id="assigned-flights-container" class="table-wrap">
-      <div class="empty">Ei dataa. Paina <strong>Hae</strong>.</div>
-    </div>
+    <!-- Piilotetut kentät loadAssignedFlights:lle (data-only) -->
+    <input type="date" id="assigned-date-from" style="display:none;">
+    <input type="date" id="assigned-date-to" style="display:none;">
+    <div id="assigned-flights-container" style="display:none;"></div>
 
-    <div id="week-view-container" class="week-view" style="display:none;"></div>
+    <div id="week-view-container" class="week-view"></div>
   </section>
 
   <!-- BRIEFING -->
@@ -492,9 +470,19 @@ function switchTab(tabId) {
   });
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  if (tabId === 'flights') {
-    const c = document.getElementById('assigned-flights-container');
-    if (c && c.querySelector('.empty')) loadAssignedFlights(false, false);
+    if (tabId === 'flights') {
+    // Viikkonäkymä päivittyy cachesta
+    if (typeof renderWeekView === 'function') {
+      try { renderWeekView(); } catch (e) {}
+    }
+    // Jos roster on tyhjä, hae kerran
+    let cache = [];
+    try {
+      cache = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+    } catch (e) {}
+    if (!cache.length && navigator.onLine && typeof loadAssignedFlights === 'function') {
+      loadAssignedFlights(false, false).catch(() => {});
+    }
   }
   if (tabId === 'settings') hydrateSettingsTab();
 }
@@ -1002,8 +990,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 7. Kotisivun kartta — TAUSTALLA
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
-  if (typeof renderHomeDashboard === 'function') {
-    renderHomeDashboard()
+  if (typeof _initHomeDashboard === 'function') {
+    _initHomeDashboard('boot')
       .then(() => boot?.setStep('map', 'done'))
       .catch((e) => {
         console.warn('[Boot] Home dashboard epäonnistui:', e);

@@ -1,17 +1,24 @@
 /* ==============================================================
  * TRIP INFO · Kortin sisäinen lomake briefing-sivulle
  * ==============================================================
- * - Kapteenin nimi haetaan Skyplanista (crewData)
- * - Painot ja polttoaineet parsitaan OFP:stä
- * - Esitäyttää lomakkeen automaattisesti
- * - Lähetä-nappi kortin sisällä
- * - Ei allekirjoitusta
+ * - Kapteenin nimi Skyplanista (crewData)
+ * - Painot ja polttoaineet OFP:stä (jaettu PDF-cache)
+ * - Overlay jos OFP ei saatavilla
+ * - Race-safe: vanha lataus ei kirjoita uuteen DOMiin
  * ============================================================== */
+'use strict';
 
 const TRIP_CAPTAIN_KEY = 'efb_captain_name';
 
+/* In-flight dedup */
+const _tripOFPInFlight  = new Map();   // fid → Promise
+const _tripCrewInFlight = new Map();   // fid → Promise
+
+/* Race-condition esto */
+let _tripRenderGen = 0;
+
 /* ==============================================================
- * OFP-parseri
+ * OFP-parseri (ennallaan)
  * ============================================================== */
 function _parseOFPFuelAndWeights(lines) {
   if (!Array.isArray(lines)) return null;
@@ -46,7 +53,6 @@ function _parseOFPFuelAndWeights(lines) {
       const m3 = line.match(/ZFW\s+(\d+)/i); if (m3) R.zfw = parseInt(m3[1], 10);
     }
 
-        // OFP Request number: "... REQUEST # 43621 ---"
     if (!R.requestNumber && /REQUEST\s*#/i.test(line)) {
       const m = line.match(/REQUEST\s*#\s*(\d+)/i);
       if (m) R.requestNumber = m[1];
@@ -68,7 +74,6 @@ function _parseOFPFuelAndWeights(lines) {
       if (m) R.minBlockFuel = parseInt(m[1], 10);
     }
 
-    // TAXI — vaadi numero heti sanan jälkeen (ei "TAXI IN")
     if (/^TAXI\s+\d/i.test(line)) {
       const m = line.match(/^TAXI\s+(\d+)/i);
       if (m) R.taxiFuel = parseInt(m[1], 10) || 0;
@@ -87,12 +92,14 @@ function _parseOFPFuelAndWeights(lines) {
 }
 
 /* ==============================================================
- * Hae OFP-data
+ * Hae OFP-data — jaettu PDF-cache
  * ============================================================== */
 async function _getTripOFPData(fid) {
   if (!fid) return null;
+  const key = String(fid);
 
-  const cacheKey = `jarvis_ofp_weights_${fid}`;
+  // localStorage-cache (6h)
+  const cacheKey = `jarvis_ofp_weights_${key}`;
   try {
     const raw = localStorage.getItem(cacheKey);
     if (raw) {
@@ -103,102 +110,123 @@ async function _getTripOFPData(fid) {
     }
   } catch (e) {}
 
-  if (typeof fetchSkyplanOFPBytes !== 'function') return null;
-  if (typeof _extractPDFLines !== 'function') return null;
+  // In-flight dedup
+  if (_tripOFPInFlight.has(key)) return await _tripOFPInFlight.get(key);
 
-  try {
-    const token = (typeof getValidSkyplanToken === 'function')
-      ? await getValidSkyplanToken().catch(() => null)
-      : null;
-    const r = await fetchSkyplanOFPBytes(fid, token);
-    if (!r?.pdfBytes) return null;
-
-    const lines = await _extractPDFLines(r.pdfBytes);
-    const parsed = _parseOFPFuelAndWeights(lines);
-
+  const p = (async () => {
     try {
-      localStorage.setItem(cacheKey, JSON.stringify({
-        at: new Date().toISOString(),
-        data: parsed
-      }));
-    } catch (e) {}
+      if (typeof _getPDFBytesForFlight !== 'function') return null;
+      if (typeof _notamReadPDFLines !== 'function') return null;
 
-    return parsed;
-  } catch (e) {
-    return null;
+      // Jaettu PDF-cache — ei lataa uudelleen jos NOTAM/waypoint parseri haki
+      const entry = await _getPDFBytesForFlight(key);
+      if (!entry?.bytes) return null;
+
+      const lines = await _notamReadPDFLines(entry.bytes);
+      const parsed = _parseOFPFuelAndWeights(lines);
+
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          at: new Date().toISOString(),
+          data: parsed
+        }));
+      } catch (e) {}
+
+      return parsed;
+    } catch (e) {
+      const msg = String(e?.message || '');
+      if (!msg.includes('422') && !msg.includes('not generated')) {
+        console.warn('[TripInfo] OFP parse failed:', e.message);
+      }
+      return null;
+    }
+  })();
+
+  _tripOFPInFlight.set(key, p);
+  try {
+    return await p;
+  } finally {
+    _tripOFPInFlight.delete(key);
   }
 }
 
 /* ==============================================================
- * Hae crew
+ * Hae crew — in-flight dedup + hiljaisempi
  * ============================================================== */
 async function _getTripCrew(fid) {
-  if (!fid) return { captain: '', fc: 0, cc: 0, dhc: 0 };
+  const empty = { captain: '', fc: 0, cc: 0, dhc: 0 };
+  if (!fid) return empty;
+  const key = String(fid);
 
-  // 1. Yritä cache
-  let log = (typeof getCachedJourneyLog === 'function')
-    ? getCachedJourneyLog(fid)
-    : null;
+  if (_tripCrewInFlight.has(key)) return await _tripCrewInFlight.get(key);
 
-  // 2. Jos cachessa ei ole crewDuty:tä → hae API:sta
-  if (!log || !log.crewDuty || !log.crewDuty.length) {
-    log = null;
-    try {
-      const token = (typeof getValidSkyplanToken === 'function')
-        ? await getValidSkyplanToken().catch(() => null)
-        : null;
-      if (token) {
-        log = await fetchJourneyLog(fid, token);
-        if (log?.crewDuty?.length) {
-          if (typeof _cacheJourneyLog === 'function') _cacheJourneyLog(fid, log);
-        } else {
-          console.warn('[TripCrew] API palautti ilman crewDuty:', log);
+  const p = (async () => {
+    let log = (typeof getCachedJourneyLog === 'function')
+      ? getCachedJourneyLog(key)
+      : null;
+
+    if (!log?.crewDuty?.length) {
+      try {
+        const token = (typeof getValidSkyplanToken === 'function')
+          ? await getValidSkyplanToken().catch(() => null)
+          : null;
+        if (token && typeof fetchJourneyLog === 'function') {
+          log = await fetchJourneyLog(key, token);
+          if (log?.crewDuty?.length && typeof _cacheJourneyLog === 'function') {
+            _cacheJourneyLog(key, log);
+          }
         }
+      } catch (e) {
+        const msg = String(e?.message || '');
+        if (!msg.includes('422') && !msg.includes('not available') && !msg.includes('not been completed')) {
+          console.warn('[TripCrew] journey-log failed:', e.message);
+        }
+        return empty;
       }
-    } catch (e) {
-      console.warn('[TripCrew] journey-log failed:', e.message);
-      return { captain: '', fc: 0, cc: 0, dhc: 0 };
     }
-  }
 
-  if (!log?.crewDuty?.length) {
-    console.warn('[TripCrew] Ei crewDuty-dataa lennolle', fid);
-    return { captain: '', fc: 0, cc: 0, dhc: 0 };
-  }
+    if (!log?.crewDuty?.length) return empty;
 
-  // 3. Käytä olemassa olevaa parseria
-  if (typeof parseCrewFromJourneyLog === 'function') {
-    const parsed = parseCrewFromJourneyLog(log);
-    const captain = parsed?.pic?.name || '';
-    const fc = (parsed?.pic ? 1 : 0) + (parsed?.fo ? 1 : 0);
-    const cc = (parsed?.ifs ? 1 : 0) + (parsed?.cabin?.length || 0);
+    // Käytä olemassa olevaa parseria
+    if (typeof parseCrewFromJourneyLog === 'function') {
+      const parsed = parseCrewFromJourneyLog(log);
+      const captain = parsed?.pic?.name || '';
+      const fc = (parsed?.pic ? 1 : 0) + (parsed?.fo ? 1 : 0);
+      const cc = (parsed?.ifs ? 1 : 0) + (parsed?.cabin?.length || 0);
+      return { captain, fc, cc, dhc: 0 };
+    }
 
-    return { captain, fc, cc, dhc: 0 };
-  }
+    // Fallback
+    const FLIGHT_DECK = ['CP','CAPT','PIC','P1','FO','SIC','P2','SO'];
+    const CAPTAIN_POS = ['CP','CAPT','PIC','P1'];
+    const DHC_POS     = ['DHC','DEADHEAD'];
 
-  // Fallback
-  const FLIGHT_DECK = ['CP','CAPT','PIC','P1','FO','SIC','P2','SO'];
-  const CAPTAIN_POS = ['CP','CAPT','PIC','P1'];
-  const DHC_POS     = ['DHC','DEADHEAD'];
+    let captain = '';
+    let fc = 0, cc = 0, dhc = 0;
 
-  let captain = '';
-  let fc = 0, cc = 0, dhc = 0;
-
-  log.crewDuty.forEach(c => {
-    const pos = String(c.position || '').toUpperCase().trim();
-    if (DHC_POS.includes(pos)) {
-      dhc++;
-    } else if (FLIGHT_DECK.includes(pos)) {
-      fc++;
-      if (CAPTAIN_POS.includes(pos) && !captain) {
-        captain = [c.firstName, c.lastName].filter(Boolean).join(' ').toUpperCase();
+    log.crewDuty.forEach(c => {
+      const pos = String(c.position || '').toUpperCase().trim();
+      if (DHC_POS.includes(pos)) {
+        dhc++;
+      } else if (FLIGHT_DECK.includes(pos)) {
+        fc++;
+        if (CAPTAIN_POS.includes(pos) && !captain) {
+          captain = [c.firstName, c.lastName].filter(Boolean).join(' ').toUpperCase();
+        }
+      } else {
+        cc++;
       }
-    } else {
-      cc++;
-    }
-  });
+    });
 
-  return { captain, fc, cc, dhc };
+    return { captain, fc, cc, dhc };
+  })();
+
+  _tripCrewInFlight.set(key, p);
+  try {
+    return await p;
+  } finally {
+    _tripCrewInFlight.delete(key);
+  }
 }
 
 /* ==============================================================
@@ -219,11 +247,25 @@ async function renderTripInfoCard(containerId, flight) {
     return;
   }
 
-  // Hae crew + OFP rinnakkain
+  const myGen = ++_tripRenderGen;
+
+  // Loading-viesti
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:10px; padding:16px 4px;">
+      <div class="loader-spinner" style="transform:scale(0.7);"><span></span><span></span><span></span></div>
+      <span style="font-size:12px; color:var(--dim);">Ladataan tietoja…</span>
+    </div>`;
+
+  // Hae rinnakkain
   const [crew, ofp] = await Promise.all([
     _getTripCrew(fid),
     _getTripOFPData(fid)
   ]);
+
+  // Race-condition check
+  if (myGen !== _tripRenderGen || !el.isConnected) return;
+
+  const hasOFP = !!ofp;
 
   // Fallbackit
   const captain = crew.captain || localStorage.getItem(TRIP_CAPTAIN_KEY) || '';
@@ -238,92 +280,104 @@ async function renderTripInfoCard(containerId, flight) {
   const tof   = Math.max(0, ramp - taxi);
   const trip  = ofp?.tripFuel  || 0;
   const tripT = ofp?.tripTime  || '00:00';
-
-  const ofpReq = ofp?.requestNumber
-                || window.ofpRequestNumber
-                || document.getElementById('j-ofp-req')?.value
-                || '01';
+  const ofpReq = ofp?.requestNumber || '';
 
   const esc = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  el.innerHTML = `
-    <div class="trip-grid">
-      <div class="trip-field trip-field-full">
-        <label>Captain Name</label>
-        <input type="text" id="ti-capt" value="${esc(captain)}"
-               readonly
-               style="background:rgba(0,194,255,0.04); color:var(--accent);
-                      font-weight:700; cursor:not-allowed;">
-      </div>
-
-      <div class="trip-field">
-        <label>MTOW (kg)</label>
-        <input type="number" id="ti-mtow" value="${mtow}">
-      </div>
-      <div class="trip-field">
-        <label>MLW (kg)</label>
-        <input type="number" id="ti-mlw" value="${mlw}">
-      </div>
-
-      <div class="trip-field">
-        <label>Ramp Fuel (kg)</label>
-        <input type="number" id="ti-ramp" value="${ramp}">
-      </div>
-      <div class="trip-field">
-        <label>Taxi Fuel (kg)</label>
-        <input type="number" id="ti-taxi" value="${taxi}">
-      </div>
-
-      <div class="trip-field">
-        <label>TakeOff Fuel (kg)</label>
-        <input type="number" id="ti-tof" value="${tof}">
-      </div>
-      <div class="trip-field">
-        <label>Trip Fuel (kg)</label>
-        <input type="number" id="ti-tripfuel" value="${trip}">
-      </div>
-
-      <div class="trip-field">
-        <label>Trip Time (HH:MM)</label>
-        <input type="text" id="ti-triptime" value="${esc(tripT)}" maxlength="5">
-      </div>
-      <div class="trip-field">
-        <label>OFP Request</label>
-        <input type="text" id="ti-ofp" value="${esc(ofpReq)}">
-      </div>
-
-      <div class="trip-field">
-        <label>Flight Crew</label>
-        <input type="number" id="ti-fc" value="${fc}">
-      </div>
-      <div class="trip-field">
-        <label>Cabin Crew</label>
-        <input type="number" id="ti-cc" value="${cc}">
-      </div>
-
-      ${!ofp ? `
-        <div class="trip-warning">
-          ⚠ OFP ei ole vielä saatavilla — täytä tiedot käsin.
+  // Overlay jos OFP puuttuu
+  const overlayHTML = !hasOFP ? `
+    <div id="ti-ofp-overlay"
+         style="position:absolute; inset:0; z-index:10;
+                background:rgba(6,10,21,0.92);
+                backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+                display:flex; flex-direction:column;
+                align-items:center; justify-content:center;
+                gap:16px; padding:24px; border-radius:12px;
+                text-align:center; animation:tiFadeIn 0.3s ease;">
+      <div style="font-size:32px;">✈</div>
+      <div>
+        <div style="font-weight:700; color:var(--text); font-size:15px; margin-bottom:8px;">
+          OFP ei ole vielä julkaistu.
         </div>
-      ` : ''}
+      </div>
+      <style>@keyframes tiFadeIn{from{opacity:0}to{opacity:1}}</style>
+    </div>
+  ` : '';
 
-      <div class="trip-actions">
-        <button class="btn-primary" id="ti-submit" onclick="submitTripInfo('${esc(fid)}', ${dhc})">
-          ✈️ Lähetä
-        </button>
+  el.innerHTML = `
+    <div style="position:relative;">
+      ${overlayHTML}
+      <div class="trip-grid">
+        <div class="trip-field trip-field-full">
+          <label>Captain Name</label>
+          <input type="text" id="ti-capt" value="${esc(captain)}"
+                 readonly
+                 style="background:rgba(0,194,255,0.04); color:var(--accent);
+                        font-weight:700; cursor:not-allowed;">
+        </div>
+
+        <div class="trip-field">
+          <label>MTOW (kg)</label>
+          <input type="number" id="ti-mtow" value="${mtow}">
+        </div>
+        <div class="trip-field">
+          <label>MLW (kg)</label>
+          <input type="number" id="ti-mlw" value="${mlw}">
+        </div>
+
+        <div class="trip-field">
+          <label>Ramp Fuel (kg)</label>
+          <input type="number" id="ti-ramp" value="${ramp}">
+        </div>
+        <div class="trip-field">
+          <label>Taxi Fuel (kg)</label>
+          <input type="number" id="ti-taxi" value="${taxi}">
+        </div>
+
+        <div class="trip-field">
+          <label>TakeOff Fuel (kg)</label>
+          <input type="number" id="ti-tof" value="${tof}">
+        </div>
+        <div class="trip-field">
+          <label>Trip Fuel (kg)</label>
+          <input type="number" id="ti-tripfuel" value="${trip}">
+        </div>
+
+        <div class="trip-field">
+          <label>Trip Time (HH:MM)</label>
+          <input type="text" id="ti-triptime" value="${esc(tripT)}" maxlength="5">
+        </div>
+        <div class="trip-field">
+          <label>OFP Request</label>
+          <input type="text" id="ti-ofp" value="${esc(ofpReq)}">
+        </div>
+
+        <div class="trip-field">
+          <label>Flight Crew</label>
+          <input type="number" id="ti-fc" value="${fc}">
+        </div>
+        <div class="trip-field">
+          <label>Cabin Crew</label>
+          <input type="number" id="ti-cc" value="${cc}">
+        </div>
+
+        <div class="trip-actions">
+          <button class="btn-primary" id="ti-submit"
+                  onclick="submitTripInfo('${esc(fid)}', ${dhc})">
+            ✈️ Lähetä Skyplanille
+          </button>
+        </div>
       </div>
     </div>
   `;
 
   // Auto-laske TakeOff Fuel
-  setTimeout(() => {
-    const rampEl = document.getElementById('ti-ramp');
-    const taxiEl = document.getElementById('ti-taxi');
-    const tofEl  = document.getElementById('ti-tof');
-    if (!rampEl || !taxiEl || !tofEl) return;
-
+  const rampEl = document.getElementById('ti-ramp');
+  const taxiEl = document.getElementById('ti-taxi');
+  const tofEl  = document.getElementById('ti-tof');
+  if (rampEl && taxiEl && tofEl) {
     const update = () => {
       const r = parseInt(rampEl.value, 10) || 0;
       const t = parseInt(taxiEl.value, 10) || 0;
@@ -331,7 +385,7 @@ async function renderTripInfoCard(containerId, flight) {
     };
     rampEl.addEventListener('input', update);
     taxiEl.addEventListener('input', update);
-  }, 50);
+  }
 }
 window.renderTripInfoCard = renderTripInfoCard;
 
@@ -340,17 +394,21 @@ window.renderTripInfoCard = renderTripInfoCard;
  * ============================================================== */
 async function submitTripInfo(fid, dhcCount) {
   const btn = document.getElementById('ti-submit');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '⏳ Lähetetään…';
-  }
+  const setBtn = (txt, disabled = false) => {
+    if (!btn) return;
+    btn.disabled = disabled;
+    btn.textContent = txt;
+    if (!disabled) btn.style.background = '';
+  };
+
+  setBtn('⏳ Lähetetään…', true);
 
   const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null)
     : null;
 
   if (!token) {
-    if (btn) { btn.disabled = false; btn.textContent = '✈️ Lähetä Skyplanille'; }
+    setBtn('✈️ Lähetä Skyplanille');
     if (typeof showToast === 'function') showToast('Token puuttuu.', 'error');
     return;
   }
@@ -371,7 +429,7 @@ async function submitTripInfo(fid, dhcCount) {
   const ccV     = num('ti-cc');
 
   if (!captain) {
-    if (btn) { btn.disabled = false; btn.textContent = '✈️ Lähetä Skyplanille'; }
+    setBtn('✈️ Lähetä Skyplanille');
     if (typeof showToast === 'function') showToast('Kapteenin nimi puuttuu.', 'warning');
     return;
   }
@@ -428,17 +486,14 @@ async function submitTripInfo(fid, dhcCount) {
       }
     } else {
       const txt = await resp.text().catch(() => '');
-      throw new Error(`HTTP ${resp.status}${txt ? ': ' + txt : ''}`);
+      throw new Error(`HTTP ${resp.status}${txt ? ': ' + txt.slice(0, 200) : ''}`);
     }
   } catch (e) {
     console.error('[TripInfo] send failed:', e);
     if (typeof showToast === 'function') {
       showToast('Lähetys epäonnistui: ' + e.message, 'error', 6000);
     }
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = '✈️ Lähetä Skyplanille';
-    }
+    setBtn('✈️ Lähetä Skyplanille');
   }
 }
 window.submitTripInfo = submitTripInfo;

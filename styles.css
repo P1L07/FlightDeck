@@ -42,8 +42,14 @@
 
 /* -------- Reset -------- */
 *, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; }
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow-x: hidden;   /* ← safety net */
+}
 html { -webkit-text-size-adjust: 100%; }
+
 body {
   font-family: var(--font-ui);
   color: var(--text);
@@ -54,6 +60,7 @@ body {
   line-height: 1.45;
   font-size: 16px;
   min-height: 100dvh;
+  overflow-x: hidden;
   padding-top: calc(68px + var(--safe-top));
   padding-bottom: calc(140px + var(--safe-bottom));
   padding-left: var(--safe-left);
@@ -198,12 +205,20 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   /* Lisätila jonka jälkeen sisältö ei jää nav-palkin taakse */
   min-height: calc(100dvh - 220px);
 }
+
 .tab-panel {
   display: none;
-  animation: fade-up 0.35s ease;
   padding-bottom: 20px;
 }
-.tab-panel.active { display: block; }
+.tab-panel.active {
+  display: block;
+
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -345,12 +360,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   margin-bottom: 16px;
 }
-.toolbar-search {
-  flex: 1 1 260px;
-  min-width: 200px;
-  position: relative;
-  display: flex; align-items: center;
-}
+
 .search-icon {
   position: absolute; left: 14px;
   font-size: 16px; color: var(--dim);
@@ -366,14 +376,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
-.toolbar-search input:focus {
-  border-color: var(--border-2);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-.toolbar-dates {
-  display: flex; align-items: center; gap: 8px;
-}
-.date-sep { color: var(--dim); }
+
 input[type="date"] {
   height: 46px; padding: 0 12px;
   border-radius: var(--radius-sm);
@@ -1003,39 +1006,6 @@ input[type="text"]:focus, textarea:focus {
   font-size: 14px;
   filter: drop-shadow(0 0 4px rgba(0,194,255,0.5));
 }
-
-/* ==================================================================
-   Näkymän vaihto (Taulukko / Viikko)
-   ================================================================== */
-.view-toggle {
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--input);
-  border: 1px solid var(--border);
-}
-.vt-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--dim);
-  transition: all 0.15s ease;
-  white-space: nowrap;
-  -webkit-user-select: none;
-  user-select: none;
-}
-.vt-btn.active {
-  color: var(--text);
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--border-2);
-}
-.vt-btn:active { transform: scale(0.97); }
-.vt-icon { font-size: 14px; color: var(--accent); }
 
 /* ==================================================================
    Toolbar-content (jaettu työkalurivi)
@@ -2737,9 +2707,9 @@ input[type="text"]:focus, textarea:focus {
 .home-map-card {
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
-  height: 100dvh;
+  /* EI width/height — inset: 0 ankkuroi tarkalleen viewportin reunoihin.
+     width: 100vw sisältää scrollbarin leveyden → oikea reuna vuotaa.
+     height: 100dvh ohittaa inset: 0 -ankkuroinnin → ylä/alareuna vuotaa. */
   border-radius: 0;
   overflow: hidden;
   background: radial-gradient(ellipse at center,
@@ -2750,9 +2720,14 @@ input[type="text"]:focus, textarea:focus {
   z-index: 1;
   user-select: none;
   -webkit-user-select: none;
+  /* Turvasäännöt: estä perityn transform/filterin rikkovan fixed-ankkurointia */
+  transform: none;
+  filter: none;
+  perspective: none;
+  will-change: auto;
+  contain: none;
 }
 
-/* Poista SÄÄ-kortin erillisyys — piilotetaan */
 #tab-home .card:not(.af-card):not(.home-map-card) {
   display: none;
 }
@@ -2950,12 +2925,13 @@ input[type="text"]:focus, textarea:focus {
 
 /* Pienemmät näytöt */
 @media (max-width: 700px) {
-  .home-map-card { height: clamp(340px, 55vh, 560px); }
+  /* .home-map-card height poistettu — inset: 0 pitää sen aina täysikokoisena */
   .hm-icao { font-size: 24px; letter-spacing: 1.5px; }
   .hm-arrow { font-size: 20px; }
   .hm-flight { font-size: 16px; }
   .home-map-hero .greet-name { font-size: 24px; }
-  .home-map-overlay { padding: 18px 18px 18px; }
+  /* Overlay tarvitsee edelleen tabbar-tilan */
+  .home-map-overlay { padding: 18px 18px calc(100px + var(--safe-bottom)); }
 }
 
 /* ==================================================================

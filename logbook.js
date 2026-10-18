@@ -833,7 +833,7 @@ function renderLogbookTable() {
           <td style="font-size:12.5px;">–</td>
           <td style="font-weight:600;">${esc(e.fstd?.totalTime || '–')}</td>
           <td style="font-size:12.5px;">${esc(e.picName || '–')}</td>
-          <td colspan="5" style="text-align:center; color:var(--dim); font-size:11px;">FSTD-sessio</td>
+          <td colspan="4" style="text-align:center; color:var(--dim); font-size:11px;">FSTD-sessio</td>
           <td>${status}</td>
           <td style="text-align:right; white-space:nowrap;">
             <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px;"
@@ -916,8 +916,12 @@ function showLogbookEntryDetail(id) {
   const e = getLogbookEntry(id);
   if (!e) return;
 
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
   const row = (label, val) => `
-    <div class="kv"><span>${label}</span><span>${val || '–'}</span></div>`;
+    <div class="kv"><span>${esc(label)}</span><span>${esc(val) || '–'}</span></div>`;
 
   const body = `
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 24px;">
@@ -953,7 +957,7 @@ function showLogbookEntryDetail(id) {
           Remarks (sarake 12)
         </div>
         <div style="padding:12px; background:var(--input); border-radius:10px;
-                    font-size:13px; line-height:1.5;">${e.remarks}</div>
+            font-size:13px; line-height:1.5;">${esc(e.remarks)}</div>
       </div>` : ''}
     ${e.signatureDataUrl ? `
       <div style="margin-top:14px;">
@@ -3825,22 +3829,6 @@ if (document.readyState === 'loading') {
   setTimeout(() => autoSyncLogbook('app-launch').catch(() => {}), 5000);
 }
 
-window.addEventListener('online', () => {
-  setTimeout(() => autoSyncLogbook('online').catch(() => {}), 3000);
-});
-
-(function _wrapForceRosterSync() {
-  if (typeof window.forceRosterSync !== 'function') return;
-  const orig = window.forceRosterSync;
-  window.forceRosterSync = async function (...args) {
-    const result = await orig.apply(this, args);
-    setTimeout(() => {
-      autoSyncLogbook('after-roster-sync').catch(() => {});
-    }, 3000);
-    return result;
-  };
-})();
-
 /* ==============================================================
  * AUTO-IMPORT · päättyneet lennot
  * ============================================================== */
@@ -3960,10 +3948,6 @@ setInterval(() => {
   if (navigator.onLine) scanForCompletedFlights().catch(() => {});
 }, AUTOIMPORT_INTERVAL_MS);
 
-window.addEventListener('online', () => {
-  setTimeout(() => scanForCompletedFlights().catch(() => {}), 2000);
-});
-
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => scanForCompletedFlights().catch(() => {}), 5000);
 });
@@ -3987,6 +3971,9 @@ async function autoBackupLogbook() {
     if (typeof showToast === 'function') {
       showToast('Varmuuskopioimaton data — muista viedä JSON.', 'info', 8000);
     }
+    // Merkitse muistutus näytetyksi — seuraava vasta 7 vrk kuluttua
+    meta.lastBackup = new Date().toISOString();
+    localStorage.setItem(LOGBOOK_BACKUP_KEY, JSON.stringify(meta));
   } catch (e) {}
 }
 window.autoBackupLogbook = autoBackupLogbook;
@@ -3998,3 +3985,38 @@ if (document.readyState === 'loading') {
 } else {
   setTimeout(autoBackupLogbook, 15000);
 }
+
+(function _wrapForceRosterSync() {
+  // Jos jo olemassa — wrap nyt
+  if (typeof window.forceRosterSync === 'function') {
+    const orig = window.forceRosterSync;
+    window.forceRosterSync = async function (...args) {
+      const result = await orig.apply(this, args);
+      setTimeout(() => {
+        autoSyncLogbook('after-roster-sync').catch(() => {});
+      }, 3000);
+      return result;
+    };
+    return;
+  }
+
+  // Muuten intercept property assignment
+  let _forceRosterSync = undefined;
+  Object.defineProperty(window, 'forceRosterSync', {
+    configurable: true,
+    get() { return _forceRosterSync; },
+    set(fn) {
+      if (typeof fn !== 'function') {
+        _forceRosterSync = fn;
+        return;
+      }
+      _forceRosterSync = async function (...args) {
+        const result = await fn.apply(this, args);
+        setTimeout(() => {
+          autoSyncLogbook('after-roster-sync').catch(() => {});
+        }, 3000);
+        return result;
+      };
+    }
+  });
+})();

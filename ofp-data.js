@@ -1,17 +1,112 @@
 /* ==============================================================
- * NOTAM-OFP · NOTAMit OFP-PDF:stä
+ * NOTAM-OFP · NOTAMit ja waypointit OFP-PDF:stä
  * ==============================================================
  * Käyttää:
- *   - getLinesFromPDFPage(page)      ← app.js / sinun
- *   - extractNOTAMs(lines)            ← sinun
- *   - FLIGHT_THREAT_DICTIONARY        ← sinun
+ *   - getLinesFromPDFPage(page)      ← ofp-parser.js
+ *   - extractNOTAMs(lines)            ← ofp-parser.js
+ *   - extractCoordFromString(text)    ← ofp-parser.js
+ *   - buildRows(items)                ← ofp-parser.js
+ *   - parseTimeString(str)            ← ofp-parser.js
+ *   - FLIGHT_THREAT_DICTIONARY        ← ofp-parser.js
  *   - fetchSkyplanOFPBytes(flightId)  ← app.js
- *   - _icaoCoords(icao)               ← LogBook.js
+ *   - _icaoCoords(icao)               ← logbook.js
+ *   - normalizeIcao(icao)             ← airport-db.js
  * ============================================================== */
 'use strict';
 
 const NOTAM_OFP_CACHE_KEY = 'notam_ofp_cache_v3';
-const NOTAM_OFP_CACHE_TTL = 30 * 60 * 1000; // 30 min
+const NOTAM_OFP_CACHE_TTL = 30 * 60 * 1000; // 30 min (localStorage-cache)
+
+/* ==============================================================
+ * JAETTU PDF-BYTES CACHE — yksi lataus per lento
+ * ==============================================================
+ * - Ei aikapohjaista TTL:ää: cache elää kunnes lento on ohi
+ * - Automaattinen siivous: 24 h STA:n jälkeen
+ * - Fallback: 7 vrk jos STA puuttuu
+ * - forceRefresh: käyttäjä voi pakottaa tuoreen haun
+ * - In-flight dedup: vain yksi verkkopyyntö samanaikaisesti
+ * ============================================================== */
+const _pdfBytesCache = new Map();     // fid → { bytes, isFinalized, at, sta }
+const _pdfBytesInFlight = new Map();  // fid → Promise
+
+const PDF_CACHE_GRACE_AFTER_STA = 24 * 60 * 60 * 1000;   // 24 h
+const PDF_CACHE_STALE_FALLBACK  = 7 * 24 * 60 * 60 * 1000; // 7 vrk
+
+function _cleanupOldPDFCache() {
+  const now = Date.now();
+  for (const [key, entry] of _pdfBytesCache.entries()) {
+    const expiry = entry.sta
+      ? entry.sta + PDF_CACHE_GRACE_AFTER_STA
+      : entry.at + PDF_CACHE_STALE_FALLBACK;
+    if (now > expiry) {
+      _pdfBytesCache.delete(key);
+    }
+  }
+}
+
+async function _getPDFBytesForFlight(fid, options = {}) {
+  const { forceRefresh = false } = options;
+  const key = String(fid);
+
+  // Siivoa vanhentuneet ennen hakua
+  _cleanupOldPDFCache();
+
+  // 1. Cache-hit (ellei pakotettu refresh)
+  if (!forceRefresh) {
+    const cached = _pdfBytesCache.get(key);
+    if (cached) return cached;
+  }
+
+  // 2. Jo käynnissä → odota
+  if (_pdfBytesInFlight.has(key)) {
+    return await _pdfBytesInFlight.get(key);
+  }
+
+  // 3. Hae verkosta
+  const p = (async () => {
+    try {
+      if (typeof fetchSkyplanOFPBytes !== 'function') {
+        throw new Error('fetchSkyplanOFPBytes puuttuu');
+      }
+
+      const token = (typeof getValidSkyplanToken === 'function')
+        ? await getValidSkyplanToken().catch(() => null) : null;
+
+      const r = await fetchSkyplanOFPBytes(fid, token);
+      if (!r?.pdfBytes) throw new Error('Ei PDF-tavuja');
+
+      // Hae lennon STA rosterista siivousta varten
+      let sta = 0;
+      try {
+        const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+        const f = roster.find(x => String(x.ID || x.id || x.FlightID) === key);
+        if (f) sta = new Date(f.StaLt || f.Sta || 0).getTime() || 0;
+      } catch (e) {}
+
+      const entry = {
+        bytes: r.pdfBytes,
+        isFinalized: !!r.isFinalized,
+        at: Date.now(),
+        sta
+      };
+      _pdfBytesCache.set(key, entry);
+      return entry;
+    } finally {
+      _pdfBytesInFlight.delete(key);
+    }
+  })();
+
+  _pdfBytesInFlight.set(key, p);
+  return await p;
+}
+
+function _invalidatePDFCache(fid) {
+  _pdfBytesCache.delete(String(fid));
+  _pdfBytesInFlight.delete(String(fid));
+}
+
+window._getPDFBytesForFlight = _getPDFBytesForFlight;
+window._invalidatePDFCache = _invalidatePDFCache;
 
 /* ==============================================================
  * Lue kaikki PDF-rivit
@@ -19,25 +114,29 @@ const NOTAM_OFP_CACHE_TTL = 30 * 60 * 1000; // 30 min
 async function _notamReadPDFLines(pdfBytes) {
   if (!pdfBytes) return [];
   if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js puuttuu');
+  if (typeof getLinesFromPDFPage !== 'function') throw new Error('getLinesFromPDFPage puuttuu');
 
   const data = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const allLines = [];
 
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const lines = await getLinesFromPDFPage(page);
-    allLines.push(...lines);
+  try {
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const lines = await getLinesFromPDFPage(page);
+      allLines.push(...lines);
+    }
+  } finally {
+    try { pdf.destroy(); } catch (e) {}
   }
 
   return allLines;
 }
 
 /* ==============================================================
- * Parsii jokaisen NOTAM-tekstin: airport, id, severity, type
+ * NOTAM-parserit
  * ============================================================== */
 function _notamParseHeader(notamText) {
-  // Esim. "UAAA A1234/26\nBLA BLA..." tai "NOTAM UAAA A1234/26\n..."
   const firstLine = String(notamText || '').split('\n')[0].trim();
 
   const m1 = firstLine.match(/^(?:-\s*)?([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i);
@@ -46,7 +145,7 @@ function _notamParseHeader(notamText) {
   const m2 = firstLine.match(/^NOTAM\s*([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i);
   if (m2) return { airport: m2[1].toUpperCase(), id: m2[2].toUpperCase() };
 
-  // Fallback: etsi mikä tahansa ICAO ensimmäiseltä riviltä
+  // Fallback: mikä tahansa ICAO ensimmäiseltä riviltä
   const m3 = firstLine.match(/\b([A-Z]{4})\b/);
   if (m3) return { airport: m3[1].toUpperCase(), id: '' };
 
@@ -74,9 +173,6 @@ function _notamCategorize(notamText) {
   return best || { level: 'info', type: 'INFO' };
 }
 
-/* ==============================================================
- * Muunna raa'at NOTAM-tekstit rikkaiksi objekteiksi
- * ============================================================== */
 function _notamEnrich(notamStrings) {
   if (!Array.isArray(notamStrings)) return [];
 
@@ -87,20 +183,20 @@ function _notamEnrich(notamStrings) {
       airport: header.airport,
       id: header.id,
       text: raw,
-      severity: cat.level,   // 'critical' | 'warning' | 'info'
+      severity: cat.level,
       type: cat.type
     };
   }).filter(n => n.airport);
 }
 
 /* ==============================================================
- * Pääfunktio
+ * Pääfunktio: parseOFPsForNotams
  * ============================================================== */
 async function parseOFPsForNotams(flightId) {
   const fid = String(flightId || '');
   if (!fid) throw new Error('Ei Flight ID:tä');
 
-  // Cache
+  // localStorage-cache
   try {
     const cache = JSON.parse(localStorage.getItem(NOTAM_OFP_CACHE_KEY) || '{}');
     const hit = cache[fid];
@@ -109,35 +205,24 @@ async function parseOFPsForNotams(flightId) {
     }
   } catch (e) {}
 
-  if (typeof fetchSkyplanOFPBytes !== 'function') {
-    throw new Error('fetchSkyplanOFPBytes puuttuu');
-  }
   if (typeof extractNOTAMs !== 'function') {
     throw new Error('extractNOTAMs puuttuu');
   }
 
-  const token = (typeof getValidSkyplanToken === 'function')
-    ? await getValidSkyplanToken().catch(() => null)
-    : null;
+  // Hae PDF (jaettu cache — yksi lataus per lento)
+  const entry = await _getPDFBytesForFlight(fid);
+  const lines = await _notamReadPDFLines(entry.bytes);
 
-  const r = await fetchSkyplanOFPBytes(fid, token);
-  if (!r?.pdfBytes) throw new Error('Ei PDF-tavuja');
-
-  const lines = await _notamReadPDFLines(r.pdfBytes);
-
-  // Käytä sinun parseria
   const rawNotams = extractNOTAMs(lines);
-
-  // Rikastetaan
   const notams = _notamEnrich(rawNotams);
-  
+
   const data = {
     flightId: fid,
     notams,
     at: new Date().toISOString()
   };
 
-  // Cache
+  // Tallenna localStorageen
   try {
     const cache = JSON.parse(localStorage.getItem(NOTAM_OFP_CACHE_KEY) || '{}');
     cache[fid] = { at: new Date().toISOString(), data };
@@ -165,7 +250,6 @@ function buildAirportData(notams, flight, options = {}) {
     notamMap.get(n.airport).push(n);
   });
 
-  /* ============ DEP / DEST — yritä montaa lähdettä ============ */
   const pickIcao = (...vals) => {
     for (const v of vals) {
       const s = String(v || '').toUpperCase().trim();
@@ -174,7 +258,7 @@ function buildAirportData(notams, flight, options = {}) {
     return '';
   };
 
-  // 1. Flight-objektista (useita kenttänimiä)
+  // 1. Flight-objektista
   let dep = pickIcao(
     flight?.DepartureStationIcaoCode,
     flight?.DepartureStationCode,
@@ -188,7 +272,7 @@ function buildAirportData(notams, flight, options = {}) {
     flight?.ArrivalIcao
   );
 
-  // 2. DOM:sta (jos flight-objekti ei täytä)
+  // 2. DOM:sta
   if (!dep) {
     dep = pickIcao(
       document.getElementById('view-dep')?.innerText,
@@ -203,7 +287,7 @@ function buildAirportData(notams, flight, options = {}) {
     );
   }
 
-  // 3. OFP-notameista (jos löytyy DEP/DEST-prefix)
+  // 3. OFP-notameista (DEP/DEST-prefix)
   if (!dep || !arr) {
     (notams || []).forEach(n => {
       if (!dep && /^DEP/i.test(n.type || '')) dep = n.airport;
@@ -211,7 +295,7 @@ function buildAirportData(notams, flight, options = {}) {
     });
   }
 
-  // 4. Rosterista (haku flight ID:llä)
+  // 4. Rosterista
   if ((!dep || !arr) && flight?.ID) {
     try {
       const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
@@ -223,13 +307,12 @@ function buildAirportData(notams, flight, options = {}) {
     } catch (e) {}
   }
 
-  /* ============ Alternates ============ */
+  // Alternates
   const altn1 = pickIcao(flight?.Alternate1IcaoCode, flight?.Alternate1);
   const altn2 = pickIcao(flight?.Alternate2IcaoCode, flight?.Alternate2);
   const alternates = [altn1, altn2].filter(Boolean);
 
-    /* ============ Kokoa kaikki kentät ============ */
-  // Normalisoi legacy-ICAOt moderneiksi (UACN → UACC)
+  // Normalisoi legacy-ICAOt (UACN → UACC)
   const norm = (typeof normalizeIcao === 'function')
     ? normalizeIcao
     : (x) => String(x || '').toUpperCase().trim();
@@ -252,7 +335,7 @@ function buildAirportData(notams, flight, options = {}) {
   normalizedAlternates.forEach(a => all.add(a));
   for (const k of normNotamMap.keys()) all.add(k);
 
-    const airports = [];
+  const airports = [];
   all.forEach(icao => {
     let role = 'NOTAM';
     if (icao === dep) role = 'DEP';
@@ -274,12 +357,13 @@ function buildAirportData(notams, flight, options = {}) {
     return o !== 0 ? o : a.icao.localeCompare(b.icao);
   });
 
-   // Logita yhteenveto vain jos koordinaatteja puuttuu
+  // Yhteenveto vain jos merkittävä määrä puuttuu
   const missing = airports.filter(a => !a.coords);
-  if (missing.length) {
-    console.log(`[NotamMap] ${missing.length} kenttää ilman koordinaatteja (ohitetaan kartalta):`,
+  if (missing.length > 3) {
+    console.log(`[NotamMap] ${missing.length} kenttää ilman koordinaatteja:`,
                 missing.map(a => a.icao).join(', '));
   }
+
   return airports;
 }
 window.buildAirportData = buildAirportData;
@@ -337,9 +421,7 @@ async function parseWaypoints(page, pageNum) {
       lat: null, lon: null
     };
 
-    // ============ 1) Etsi waypointin nimi + koordinaatit ============
-    // Yritä ensin prev-rivi (yleensä sama rivi jossa name)
-    // Sitten sama rivi, sitten seuraava (joskus teksti on alla)
+    // Etsi nimi + koordinaatit (prev, sama, next)
     const candidates = [];
     if (r > 0) candidates.push(rows[r - 1]);
     candidates.push(row);
@@ -350,20 +432,21 @@ async function parseWaypoints(page, pageNum) {
       const fullString = cand.items.map(x => x.str).join(' ').trim();
       const parts = fullString.split(/\s+/);
 
-      // Koordinaatti etsitään ensin koko rivin tekstistä
-      if (!coordFound) {
-        const c = extractCoordFromString(fullString);
-        if (c) {
-          data.lat = c.lat;
-          data.lon = c.lon;
-          coordFound = true;
+      if (!coordFound && typeof extractCoordFromString === 'function') {
+        try {
+          const c = extractCoordFromString(fullString);
+          if (c && isFinite(c.lat) && isFinite(c.lon)) {
+            data.lat = c.lat;
+            data.lon = c.lon;
+            coordFound = true;
+          }
+        } catch (e) {
+          // Yksittäinen rivi ei parsittavissa — ohita
         }
       }
 
-      // Nimi ja muut sarakkeet — vain prev-riviltä (ei sekoita)
       if (cand === rows[r - 1] && parts.length > 0 && parts[0]) {
         const maybeName = parts[0].replace(/[^a-zA-Z0-9*-]/g, '') || parts[0];
-        // Hyväksy vain jos näyttää waypoint-nimeltä (2-6 merkkiä, sisältää kirjaimen)
         if (maybeName.length >= 2 && maybeName.length <= 8 && /[A-Z]/i.test(maybeName)) {
           data.name = maybeName;
           if (parts[1]) data.awy = parts[1];
@@ -376,7 +459,7 @@ async function parseWaypoints(page, pageNum) {
       }
     }
 
-    // ============ 2) SR ============
+    // SR
     for (let i = 0; i < row.items.length - 1; i++) {
       const t = (row.items[i].str || '').trim();
       const n = (row.items[i + 1].str || '').trim();
@@ -389,9 +472,9 @@ async function parseWaypoints(page, pageNum) {
       }
     }
 
-    // ============ 3) Hyväksy vain jos name JA coords löytyi ============
+    // Hyväksy vain jos name JA coords
     if (data.name === '?') continue;
-    if (!coordFound) continue;   // ilman koordinaattia ei voi piirtää
+    if (!coordFound) continue;
 
     waypoints.push({
       ...data,
@@ -430,7 +513,7 @@ async function parseOFPsForWaypoints(flightId) {
   const fid = String(flightId || '');
   if (!fid) throw new Error('Ei Flight ID:tä');
 
-  // Cache
+  // Waypoint-data cache
   try {
     const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
     const hit = cache[fid];
@@ -439,16 +522,16 @@ async function parseOFPsForWaypoints(flightId) {
     }
   } catch (e) {}
 
-  if (typeof fetchSkyplanOFPBytes !== 'function') throw new Error('fetchSkyplanOFPBytes puuttuu');
+  // Hae PDF (jaettu cache — ei lataa uudelleen jos NOTAM-parseri jo haki)
+  const entry = await _getPDFBytesForFlight(fid);
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(entry.bytes) }).promise;
 
-  const token = (typeof getValidSkyplanToken === 'function')
-    ? await getValidSkyplanToken().catch(() => null) : null;
-
-  const r = await fetchSkyplanOFPBytes(fid, token);
-  if (!r?.pdfBytes) throw new Error('Ei PDF-tavuja');
-
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(r.pdfBytes) }).promise;
-  const waypoints = await parseAllWaypoints(pdf);
+  let waypoints = [];
+  try {
+    waypoints = await parseAllWaypoints(pdf);
+  } finally {
+    try { pdf.destroy(); } catch (e) {}
+  }
 
   const data = { flightId: fid, waypoints, at: new Date().toISOString() };
 

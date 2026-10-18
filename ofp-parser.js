@@ -17,22 +17,30 @@
 async function getLinesFromPDFPage(page) {
   const content = await page.getTextContent();
   const items = content.items;
+  if (!Array.isArray(items)) return [];
 
-  // Ryhmittele Y-koordinaatin mukaan
   const linesObj = {};
   items.forEach(item => {
+    if (!item || !item.transform || !Array.isArray(item.transform)) return;
     const y = Math.round(item.transform[5]);
+    if (!isFinite(y)) return;
     if (!linesObj[y]) linesObj[y] = [];
     linesObj[y].push(item);
   });
 
-  // Järjestä Y:t ylhäältä alas
   const yCoords = Object.keys(linesObj).sort((a, b) => b - a);
 
-  // Järjestä X:t vasemmalta oikealle ja yhdistä
   return yCoords.map(y => {
-    const lineItems = linesObj[y].sort((a, b) => a.transform[4] - b.transform[4]);
-    return lineItems.map(item => item.str).join(' ').replace(/\s+/g, ' ').trim();
+    const lineItems = linesObj[y].sort((a, b) => {
+      const ax = (a.transform && a.transform[4]) || 0;
+      const bx = (b.transform && b.transform[4]) || 0;
+      return ax - bx;
+    });
+    return lineItems
+      .map(item => item.str || '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   });
 }
 window.getLinesFromPDFPage = getLinesFromPDFPage;
@@ -90,7 +98,9 @@ function extractNOTAMs(fullText) {
   const stopMarkers = [
     'ARRIVAL:', 'OTHER:', 'DEPARTURE:', '---', 'PAGE',
     'FLY ARYSTAN BRIEF', 'AIR ASTANA BRIEF', 'FIR:', 'REGION:',
-    'NOT CLASSIFIED', 'FIRE AND RESCUE', 'METAR', 'TAF', 'SPECI'
+    'NOT CLASSIFIED', 'FIRE AND RESCUE', 'METAR', 'TAF', 'SPECI',
+    // Lisää OFP-osiot:
+    'ACC:', 'CTR:', 'TMA:', 'ENROUTE:', 'ALTERNATE:'
   ];
 
   lines.forEach(line => {
@@ -140,37 +150,58 @@ window.extractNOTAMs = extractNOTAMs;
  * ============================================================== */
 function buildRows(items) {
   const rows = {};
+  if (!Array.isArray(items)) return [];
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
+    if (!item || !item.transform || !Array.isArray(item.transform)) continue;
     const y = Math.round(item.transform[5]);
+    if (!isFinite(y)) continue;
     if (!rows[y]) rows[y] = [];
     rows[y].push(item);
   }
+
   return Object.keys(rows).map(y => ({
     y: parseFloat(y),
-    items: rows[y].sort((a, b) => a.transform[4] - b.transform[4])
+    items: rows[y].sort((a, b) => {
+      const ax = (a.transform && a.transform[4]) || 0;
+      const bx = (b.transform && b.transform[4]) || 0;
+      return ax - bx;
+    })
   }));
 }
 window.buildRows = buildRows;
 
 function parseTimeString(timeStr) {
   if (!timeStr) return 0;
-  if (timeStr.length === 4 && /^\d{4}$/.test(timeStr)) {
-    return (parseInt(timeStr.substring(0, 2)) || 0) * 60
-         + (parseInt(timeStr.substring(2, 4)) || 0);
+  const s = String(timeStr).trim();
+
+  // HHMM (4 numeroa, ei erotinta)
+  if (/^\d{4}$/.test(s)) {
+    return (parseInt(s.substring(0, 2)) || 0) * 60
+         + (parseInt(s.substring(2, 4)) || 0);
   }
-  if (timeStr.includes(':')) {
-    const [h, m] = timeStr.split(':');
+
+  // HH:MM
+  if (s.includes(':')) {
+    const [h, m] = s.split(':');
     return (parseInt(h) || 0) * 60 + (parseInt(m) || 0);
   }
-  const sep = timeStr.includes(':') ? ':' : '.';
-  const [hStr, mStr] = timeStr.split(sep);
-  let h = parseInt(hStr) || 0;
-  let m = parseInt(mStr) || 0;
-  if (mStr && mStr.length === 1 && sep === '.') m *= 10;
-  return h * 60 + m;
+
+  // H.M tai H.MM (piste)
+  if (s.includes('.')) {
+    const [hStr, mStr] = s.split('.');
+    const h = parseInt(hStr) || 0;
+    let m = parseInt(mStr) || 0;
+    // "1.5" → 1h 50min (yksi desimaali = kymmeniä minuutteja)
+    if (mStr && mStr.length === 1) m *= 10;
+    return h * 60 + m;
+  }
+
+  // Fallback: yritä parsia kokonaislukuna minuutteina
+  const n = parseInt(s, 10);
+  return isNaN(n) ? 0 : n;
 }
-window.parseTimeString = parseTimeString;
 
 /* ==============================================================
  * Koordinaattien poiminta PDF-riviltä
@@ -194,8 +225,7 @@ function extractCoordFromString(str) {
   if (!str) return null;
   const s = String(str);
 
-  // 1) ddmm.m / dddmm.m  (N4544.3 E06835.5)
-  //    Lat: 2 digit deg + 2 digit min;  Lon: 3 digit deg + 2 digit min
+  // ============ 1) Sign-first ddmm.m: N4544.3 E06835.5 ============
   let m = s.match(
     /([NS])\s*(\d{2})\s*(\d{2}(?:\.\d+)?)\s*['′]?\s*([EW])\s*(\d{3})\s*(\d{2}(?:\.\d+)?)/i
   );
@@ -205,7 +235,17 @@ function extractCoordFromString(str) {
     if (lat != null && lon != null) return { lat, lon };
   }
 
-  // 2) ddmmss (N454430 E0683518)
+  // ============ 1b) Sign-last ddmm.m: 4544.3N 06835.5E ============
+  m = s.match(
+    /(\d{2})\s*(\d{2}(?:\.\d+)?)\s*['′]?\s*([NS])\s*(\d{3})\s*(\d{2}(?:\.\d+)?)\s*['′]?\s*([EW])/i
+  );
+  if (m) {
+    const lat = _coordParseDdmm(m[3].toUpperCase(), m[1], m[2]);
+    const lon = _coordParseDdmm(m[6].toUpperCase(), m[4], m[5]);
+    if (lat != null && lon != null) return { lat, lon };
+  }
+
+  // ============ 2) Sign-first ddmmss: N454430 E0683518 ============
   m = s.match(
     /([NS])\s*(\d{2})\s*(\d{2})\s*(\d{2})['″]?\s*([EW])\s*(\d{3})\s*(\d{2})\s*(\d{2})/i
   );
@@ -217,7 +257,19 @@ function extractCoordFromString(str) {
     return { lat, lon };
   }
 
-  // 3) Desimaalipari (45.7383 68.5917) — varmista ettei sekoita muuhun dataan
+  // ============ 2b) Sign-last ddmmss: 454430N 0683518E ============
+  m = s.match(
+    /(\d{2})\s*(\d{2})\s*(\d{2})['″]?\s*([NS])\s*(\d{3})\s*(\d{2})\s*(\d{2})['″]?\s*([EW])/i
+  );
+  if (m) {
+    const lat = (parseInt(m[1], 10) + parseInt(m[2], 10)/60 + parseInt(m[3], 10)/3600)
+              * (m[4].toUpperCase() === 'S' ? -1 : 1);
+    const lon = (parseInt(m[5], 10) + parseInt(m[6], 10)/60 + parseInt(m[7], 10)/3600)
+              * (m[8].toUpperCase() === 'W' ? -1 : 1);
+    return { lat, lon };
+  }
+
+  // ============ 3) Desimaalipari: 45.7383 68.5917 ============
   m = s.match(/\b(-?\d{1,3}\.\d{3,})\s+(-?\d{1,3}\.\d{3,})\b/);
   if (m) {
     const lat = parseFloat(m[1]);

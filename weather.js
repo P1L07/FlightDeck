@@ -48,7 +48,18 @@ async function fetchMETAR(icao) {
   const target = `${WX_BASE}/metar?ids=${encodeURIComponent(icao)}&format=json&hours=12`;
   const resp = await fetch(_wxProxied(target));
   if (!resp.ok) throw new Error(`METAR HTTP ${resp.status}`);
-  const arr = await resp.json();
+
+  // Tyhjä tai ei-JSON vastaus = kentällä ei ole METARia juuri nyt
+  const text = await resp.text();
+  if (!text || !text.trim()) return null;
+
+  let arr;
+  try { arr = JSON.parse(text); }
+  catch (e) {
+    console.warn(`[METAR ${icao}] Ei JSONia — ohitetaan`);
+    return null;
+  }
+
   const data = Array.isArray(arr) && arr.length ? arr[0] : null;
   if (data) _wxCacheSet(key, data);
   return data;
@@ -62,7 +73,17 @@ async function fetchTAF(icao) {
   const target = `${WX_BASE}/taf?ids=${encodeURIComponent(icao)}&format=json`;
   const resp = await fetch(_wxProxied(target));
   if (!resp.ok) throw new Error(`TAF HTTP ${resp.status}`);
-  const arr = await resp.json();
+
+  const text = await resp.text();
+  if (!text || !text.trim()) return null;
+
+  let arr;
+  try { arr = JSON.parse(text); }
+  catch (e) {
+    console.warn(`[TAF ${icao}] Ei JSONia — ohitetaan`);
+    return null;
+  }
+
   const data = Array.isArray(arr) && arr.length ? arr[0] : null;
   if (data) _wxCacheSet(key, data);
   return data;
@@ -273,6 +294,30 @@ function _findCurrentAndNextFlights() {
   } catch (e) {}
   if (!Array.isArray(roster)) roster = [];
 
+  // ============ PINNED FLIGHT CHECK ============
+  // Jos briefingissä valittiin lento, käytä sitä
+  try {
+    const pinnedId = localStorage.getItem('home_pinned_flight_id');
+    const pinnedAt = localStorage.getItem('home_pinned_flight_at');
+    if (pinnedId && pinnedAt) {
+      const ageH = (Date.now() - new Date(pinnedAt).getTime()) / 3600000;
+      // Pinned vanhenee 24h kuluttua
+      if (ageH < 24) {
+        const pinnedFlight = roster.find(f =>
+          String(f.ID || f.id || f.FlightID) === String(pinnedId)
+        );
+        if (pinnedFlight) {
+          console.log('[Home] Käytetään pinned-lentoa:', pinnedFlight.FlightNumber);
+          return { current: null, next: pinnedFlight, pinned: true };
+        }
+      } else {
+        // Vanhentunut — poista
+        localStorage.removeItem('home_pinned_flight_id');
+        localStorage.removeItem('home_pinned_flight_at');
+      }
+    }
+  } catch (e) {}
+
   const now = Date.now();
   const WITH_GRACE_BEFORE = 30 * 60 * 1000;
   const WITH_GRACE_AFTER  = 45 * 60 * 1000;
@@ -300,6 +345,18 @@ function _findCurrentAndNextFlights() {
 }
 
 async function renderHomeDashboard() {
+  // Varmista ettei ancestor aseta containing blockia .home-map-card:lle
+  try {
+    const cardEl = document.getElementById('home-map-card');
+    const panel = cardEl?.closest('.tab-panel');
+    if (panel) panel.style.transform = 'none';
+    if (panel) panel.style.filter = 'none';
+    if (panel) panel.style.contain = 'none';
+    if (panel) panel.style.willChange = 'auto';
+    const content = cardEl?.closest('.content');
+    if (content) content.style.transform = 'none';
+  } catch (e) {}
+  
   // Tyhjennä edelliset intervallit
   if (window._standRefreshTimer) {
     clearInterval(window._standRefreshTimer);
@@ -312,8 +369,6 @@ async function renderHomeDashboard() {
 
   const { current, next } = _findCurrentAndNextFlights();
   const flight = current || next;
-
-  // HUOM: renderActiveFlightCard POISTETTU
 
   const cardEl = document.getElementById('home-map-card');
   const mapEl = document.getElementById('fc-map');
@@ -473,11 +528,15 @@ async function renderHomeDashboard() {
     }
   }
 
-  // ============ KRIITTINEN MUUTOS: Renderöi kartta HETI ============
+  // ============ Kartan optiot — mobiililla light mode ============
+  const _isMobile = /iPad|iPhone|iPod|Android/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
   const mapOpts = {
-    realistic: true,
-    showTimezones: true,
+    realistic: !_isMobile,
+    showTimezones: !_isMobile,
     showWeather: true,
+    lightMode: _isMobile,
     date: new Date(),
     margin: 20,
     onMarkerClick: (airport, evt) => {
@@ -492,12 +551,14 @@ async function renderHomeDashboard() {
   let extraAirports = [];
   let waypointList = [];
 
+  // ============ Renderöi kartta HETI ============
   if (typeof renderFlightMap === 'function') {
     renderFlightMap(mapEl, dep, arr, mapOpts);
   }
 
-  // ============ Lataa OFP-data TAUSTALLA ============
+  // ============ Lataa OFP-data + WX taustalla ============
   (async () => {
+    // 1. NOTAMit
     try {
       if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
         const data = await parseOFPsForNotams(fid);
@@ -515,6 +576,7 @@ async function renderHomeDashboard() {
       }
     }
 
+    // 2. Waypointit
     try {
       if (typeof parseOFPsForWaypoints === 'function' && fid && !_ofpLoadFailed[fid]) {
         const wpData = await parseOFPsForWaypoints(fid);
@@ -529,6 +591,7 @@ async function renderHomeDashboard() {
       }
     }
 
+    // 3. Re-render waypointeilla
     if (waypointList.length > 0 || extraAirports.length > 0) {
       if (typeof renderFlightMap === 'function') {
         renderFlightMap(mapEl, dep, arr, {
@@ -537,8 +600,22 @@ async function renderHomeDashboard() {
           waypoints: waypointList
         });
       }
-      if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
-        _preloadWxForAirports(notamAirports).catch(() => {});
+    }
+
+    // 4. WX-lataus + re-render kun data cachessa
+    if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
+      try {
+        await _preloadWxForAirports(notamAirports);
+        // WX-merkit ilmestyvät vasta kun kartta renderöidään uudelleen
+        if (typeof renderFlightMap === 'function') {
+          renderFlightMap(mapEl, dep, arr, {
+            ...mapOpts,
+            extraAirports,
+            waypoints: waypointList
+          });
+        }
+      } catch (e) {
+        // Hiljainen — WX-merkit jäävät puuttumaan mutta kartta toimii
       }
     }
   })();
@@ -772,47 +849,52 @@ window._findAirportForIcao = _findAirportForIcao;
 /* ==============================================================
  * KOTISIVUN INIT
  * ============================================================== */
+let _homeDashRunning = false;
+let _homeDashPending = false;
+
 async function _initHomeDashboard(reason = 'boot') {
+  if (_homeDashRunning) {
+    _homeDashPending = true;
+    return;
+  }
+  _homeDashRunning = true;
   try {
     await renderHomeDashboard();
   } catch (err) {
     console.error('[Weather] virhe:', err);
+  } finally {
+    _homeDashRunning = false;
+    if (_homeDashPending) {
+      _homeDashPending = false;
+      // Aja yksi ylimääräinen kierros jos jokin laukaisin jäi odottamaan
+      setTimeout(() => _initHomeDashboard(reason + '-queued'), 100);
+    }
   }
 }
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => setTimeout(() => _initHomeDashboard('DOM'), 900));
-} else {
-  setTimeout(() => _initHomeDashboard('immediate'), 900);
-}
-
-window.addEventListener('online', () => {
-  setTimeout(() => _initHomeDashboard('online'), 1500);
-});
 
 document.addEventListener('click', (ev) => {
   const btn = ev.target.closest('.tab-btn[data-tab="home"]');
   if (!btn) return;
   setTimeout(() => {
+    // Tyhjennä pinned jos käyttäjä palaa kotiin
+    try {
+      const pinnedAt = localStorage.getItem('home_pinned_flight_at');
+      if (pinnedAt) {
+        const ageMin = (Date.now() - new Date(pinnedAt).getTime()) / 60000;
+        // Pidetään voimassa 2 min (esim. jos kävi vahingossa toisella tabilla)
+        // Sen jälkeen palataan normaaliin valintaan
+        if (ageMin > 2) {
+          localStorage.removeItem('home_pinned_flight_id');
+          localStorage.removeItem('home_pinned_flight_at');
+        }
+      }
+    } catch (e) {}
+
     const mapEl = document.getElementById('fc-map');
     if (mapEl && !mapEl.querySelector('svg')) {
       _initHomeDashboard('tab-click').catch(() => {});
     }
   }, 50);
-});
-
-document.addEventListener('DOMContentLoaded', () => {
-  const flightsContainer = document.getElementById('assigned-flights-container');
-  if (!flightsContainer) return;
-  let lastLen = 0;
-  const obs = new MutationObserver(() => {
-    const now = flightsContainer.querySelectorAll('tbody tr').length;
-    if (now !== lastLen) {
-      lastLen = now;
-      if (now > 0) setTimeout(() => _initHomeDashboard('roster-update'), 400);
-    }
-  });
-  obs.observe(flightsContainer, { childList: true, subtree: true });
 });
 
 setTimeout(() => {

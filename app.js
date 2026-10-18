@@ -173,13 +173,15 @@ async function fetchFlightIdFromRoster(flightDateStr, flightNumberRaw, depIcaoRa
   }
 
   let employeeId = null;
-  try {
-    const employee = decodeJWT(token);
-    employeeId = employee.employeeid || employee.EmployeeID || employee.employeeId ||
-                 employee.nameid || employee.sub ||
-                 employee['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier'] || null;
-  } catch (e) {
-    console.warn('Failed to decode JWT for EmployeeID', e);
+  if (typeof decodeJWT === 'function') {
+    try {
+      const employee = decodeJWT(token) || {};
+      employeeId = employee.employeeid || employee.EmployeeID || employee.employeeId ||
+                   employee.nameid || employee.sub ||
+                   employee['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier'] || null;
+    } catch (e) {
+      console.warn('Failed to decode JWT for EmployeeID', e);
+    }
   }
 
   // Clean inputs
@@ -453,14 +455,46 @@ window.promptForTokenModal = promptForTokenModal;
  * Response: { AccessToken, RefreshToken } ← molemmat uusia
  * ============================================================== */
 
+/* ==============================================================
+ * REFRESH TOKEN · uusi access token refresh tokenilla
+ * ==============================================================
+ * Endpoint: POST /api/v1/auth/refresh-token
+ * Header:   mobile-version: 1.2.0.94
+ * Body:     { RefreshToken: "<current>" }
+ * Response: { AccessToken, RefreshToken } ← molemmat uusia
+ *
+ * Parannukset:
+ *   - Cooldown 5 min epäonnistumisen jälkeen (estää 500-myrskyn)
+ *   - Erottaa transientin (5xx/network) ja pysyvän (401/403) virheen
+ *   - Logittaa serverin vastauksen 5xx-tapauksessa (debug)
+ *   - Tallentaa uuden refresh tokenin backup-avaimeen
+ *   - Ei poista refresh tokenia 500-tapauksessa
+ * ============================================================== */
+
 let _refreshInFlight = null;
+let _lastModalShownAt = 0;
+const MODAL_COOLDOWN_MS = 10 * 1000;   // 10 s
+let _refreshFailedAt = 0;
+let _refreshLastError = null;
+const REFRESH_FAIL_COOLDOWN_MS = 5 * 60 * 1000;   // 5 min
 
 async function _refreshSkyplanToken(refreshToken) {
+  // 1. Cooldown — älä yritä uudelleen heti epäonnistumisen jälkeen
+  if (_refreshFailedAt && (Date.now() - _refreshFailedAt) < REFRESH_FAIL_COOLDOWN_MS) {
+    const remainingSec = Math.ceil(
+      (REFRESH_FAIL_COOLDOWN_MS - (Date.now() - _refreshFailedAt)) / 1000
+    );
+    console.log(`[Token] Refresh cooldown — yritetään uudelleen ${remainingSec} s kuluttua`);
+    return null;
+  }
+
+  // 2. Jos refresh on jo käynnissä → odota
   if (_refreshInFlight) {
     console.log('[Token] Refresh jo käynnissä — odotetaan');
     return await _refreshInFlight;
   }
 
+  // 3. Validoi refresh token
   const clean = String(refreshToken || '').trim()
     .replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
   if (!clean || clean.length < 20) {
@@ -468,7 +502,11 @@ async function _refreshSkyplanToken(refreshToken) {
     return null;
   }
 
+  // 4. Käynnistä refresh
   _refreshInFlight = (async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
     try {
       const resp = await fetch('https://kcskyplanapi.airastana.com/api/v1/auth/refresh-token', {
         method: 'POST',
@@ -477,30 +515,45 @@ async function _refreshSkyplanToken(refreshToken) {
           'Accept': 'application/json',
           'mobile-version': '1.2.0.94'
         },
-        body: JSON.stringify({ RefreshToken: clean })
+        body: JSON.stringify({ RefreshToken: clean }),
+        signal: controller.signal
       });
 
+      // 5. Pysyvä virhe: refresh token ei enää kelpaa
       if (resp.status === 401 || resp.status === 403) {
-        console.warn('[Token] Refresh hylätty (HTTP ' + resp.status + ')');
-        // HUOM: EI poisteta refresh tokenia. Käyttäjä voi poistaa sen
-        // manuaalisesti Settings-sivulta, tai se korvataan kun uusi token saadaan.
+        console.warn('[Token] Refresh hylätty (HTTP ' + resp.status + ') — token vanhentunut tai käytetty');
+        // Merkitse epäonnistuneeksi mutta ÄLÄ poista tokenia automaattisesti
+        _refreshFailedAt = Date.now();
+        _refreshLastError = 'HTTP ' + resp.status;
         return null;
       }
 
+      // 6. Transientti virhe: server ongelmissa, yritä myöhemmin uudelleen
       if (!resp.ok) {
-        console.warn('[Token] Refresh HTTP', resp.status);
+        let bodyText = '';
+        try { bodyText = await resp.text(); } catch (e) {}
+        console.warn(
+          `[Token] Refresh HTTP ${resp.status}`,
+          bodyText ? '— ' + bodyText.slice(0, 200) : ''
+        );
+        _refreshFailedAt = Date.now();
+        _refreshLastError = 'HTTP ' + resp.status;
         return null;
       }
 
+      // 7. Onnistunut refresh
       const data = await resp.json();
       const newAccess  = data.AccessToken  || data.accessToken  || data.access_token;
       const newRefresh = data.RefreshToken || data.refreshToken || data.refresh_token;
 
       if (!newAccess) {
-        console.warn('[Token] Refresh: ei AccessToken-kenttää');
+        console.warn('[Token] Refresh: ei AccessToken-kenttää vastauksessa');
+        _refreshFailedAt = Date.now();
+        _refreshLastError = 'no-access-token';
         return null;
       }
 
+      // 8. Tallenna uudet tokenit (access + refresh + backup)
       try {
         localStorage.setItem('skyplan_token', newAccess);
         if (newRefresh) {
@@ -508,17 +561,31 @@ async function _refreshSkyplanToken(refreshToken) {
           localStorage.setItem('skyplan_refresh_token_backup', newRefresh);
           console.log('[Token] ✓ Access + uusi Refresh tallennettu');
         } else {
-          console.log('[Token] ✓ Access tallennettu');
+          console.log('[Token] ✓ Access tallennettu (refresh ei muuttunut)');
         }
       } catch (e) {
         console.warn('[Token] Tallennus epäonnistui:', e);
       }
 
+      // 9. Nollaa virhetila
+      _refreshFailedAt = 0;
+      _refreshLastError = null;
+
       return newAccess;
+
     } catch (e) {
-      console.warn('[Token] Refresh virhe:', e.message);
+      // 10. Verkkovirhe tai timeout
+      if (e.name === 'AbortError') {
+        console.warn('[Token] Refresh timeout (15 s)');
+        _refreshLastError = 'timeout';
+      } else {
+        console.warn('[Token] Refresh verkkovirhe:', e.message);
+        _refreshLastError = e.message;
+      }
+      _refreshFailedAt = Date.now();
       return null;
     } finally {
+      clearTimeout(timeoutId);
       _refreshInFlight = null;
     }
   })();
@@ -527,15 +594,19 @@ async function _refreshSkyplanToken(refreshToken) {
 }
 window._refreshSkyplanToken = _refreshSkyplanToken;
 
+/* Debug-apuri: nollaa cooldown käsin konsolista */
+window._resetRefreshCooldown = function() {
+  _refreshFailedAt = 0;
+  _refreshLastError = null;
+  console.log('[Token] Refresh cooldown nollattu');
+};
+
 /* ==============================================================
  * GET VALID TOKEN · älykäs tokenin haku + refresh
  * ============================================================== */
 window.getValidSkyplanToken = async function() {
   if (!navigator.onLine) {
     console.log('[Token] Offline — palautetaan cached access token');
-    // Palautetaan välimuistiin tallennettu token. Verkkopyynnöt epäonnistuvat
-    // joka tapauksessa offline-tilassa, mutta tämä mahdollistaa sen että
-    // sovellus näkee tokenin olevan olemassa.
     try {
       const cached = localStorage.getItem('skyplan_token');
       if (cached && cached.length > 20) return cached;
@@ -548,8 +619,16 @@ window.getValidSkyplanToken = async function() {
   }
 
   const safePromptModal = async () => {
+    // ESTÄ 4x MODAALI: älä näytä uutta modaalia jos edellinen oli <10s sitten.
+    // 500-virheen tapauksessa käyttäjä ei voi tehdä mitään → ei modaalia.
+    if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) {
+      console.log('[Token] Modal näytetty hiljattain — ohitetaan');
+      return null;
+    }
+    
     if (typeof promptForTokenModal === 'function') {
       try {
+        _lastModalShownAt = Date.now();
         window._skyplanTokenPromise = promptForTokenModal();
         const newToken = await window._skyplanTokenPromise;
         return newToken ? String(newToken).trim()
@@ -558,7 +637,6 @@ window.getValidSkyplanToken = async function() {
         window._skyplanTokenPromise = null;
       }
     }
-    console.warn("promptForTokenModal function is missing.");
     return null;
   };
 
@@ -583,17 +661,14 @@ window.getValidSkyplanToken = async function() {
     } catch (e) { return null; }
   };
 
-  // Hae access + refresh
   let token = null;
   let refreshToken = null;
   try {
     token = localStorage.getItem('skyplan_token');
     refreshToken = localStorage.getItem('skyplan_refresh_token');
-    // Fallback backup-avaimeen
     if (!refreshToken) {
       const backup = localStorage.getItem('skyplan_refresh_token_backup');
       if (backup) {
-        console.log('[Token] Palautettu backup-avaimeesta');
         refreshToken = backup;
         try { localStorage.setItem('skyplan_refresh_token', backup); } catch (e) {}
       }
@@ -611,19 +686,34 @@ window.getValidSkyplanToken = async function() {
     }
   }
 
-  // Onko token vielä voimassa?
+  // 1. Access token vielä voimassa (>5 min jäljellä) → palauta sellaisenaan
   if (token) {
     const decoded = parseJwt(token);
     if (decoded && typeof decoded.exp === 'number') {
       const now = Math.floor(Date.now() / 1000);
-      if (decoded.exp > now + 300) {
-        return token;
-      }
+      if (decoded.exp > now + 300) return token;
     }
   }
 
-  // Yritä refresh
+  // 2. Ei access tokenia → ensimmäinen käyttö
+  if (!token) {
+    console.log('[Token] Ei tokenia — pyydetään käyttäjältä');
+    return await safePromptModal();
+  }
+
+  // 3. Access token vanhentunut — tarkista refresh token
   if (refreshToken && refreshToken.length > 10) {
+    const decodedRefresh = parseJwt(refreshToken);
+    const refreshExpired = decodedRefresh && decodedRefresh.exp
+      && (decodedRefresh.exp * 1000 < Date.now());
+    
+    if (refreshExpired) {
+      // Refresh token oikeasti vanhentunut → käyttäjän pakko syöttää uusi
+      console.log('[Token] Refresh token vanhentunut — pyydetään käyttäjältä');
+      return await safePromptModal();
+    }
+    
+    // Refresh token on voimassa → yritä refresh
     console.log('[Token] Access vanhentunut — uusitaan refresh tokenilla');
     try {
       const newToken = await _refreshSkyplanToken(refreshToken);
@@ -631,12 +721,17 @@ window.getValidSkyplanToken = async function() {
     } catch (e) {
       console.warn('[Token] Refresh epäonnistui:', e.message);
     }
+    
+    // Refresh epäonnistui (500, timeout, cooldown).
+    // ÄLÄ näytä modaalia — tämä on palvelimen ongelma, ei käyttäjän.
+    // Topbar näyttää "⚠️ vanhentunut" — käyttäjä voi klikata sitä
+    // ja mennä Settingsiin päivittämään tokenin manuaalisesti.
+    console.log('[Token] Refresh epäonnistui — ei näytetä modaalia (cooldown aktiivinen)');
+    return null;
   }
 
-  // Ei tokenia → pyydä käyttäjältä
-  if (!token) return await safePromptModal();
-
-  // Token vanhentui eikä refresh toimi → pyydä uusi
+  // 4. Ei refresh tokenia mutta access token on → pakko hakea uusi
+  console.log('[Token] Ei refresh tokenia — pyydetään käyttäjältä');
   return await safePromptModal();
 };
 
@@ -671,7 +766,15 @@ window.loadAssignedFlights = async function(isManualSearch = false, forceOnlineS
     }
   };
 
+  /* ==============================================================
+   * renderTable — päivittää OFFLINE-badgen ja viikkonäkymän
+   * ==============================================================
+   * Taulukkonäkymä on poistettu. Tämä funktio:
+   *   - Päivittää OFFLINE-badgen
+   *   - Triggeröi viikkonäkymän uudelleenrenderöinnin (se lukee cachen)
+   * ============================================================== */
   const renderTable = async (flights, isCached = false, lastSyncTime = '') => {
+    // 1. OFFLINE-badge
     if (badgeEl) {
       if (isCached) {
         badgeEl.style.display = 'inline-block';
@@ -681,119 +784,23 @@ window.loadAssignedFlights = async function(isManualSearch = false, forceOnlineS
       }
     }
 
-    if (!flights || flights.length === 0) {
-      container.innerHTML = '<div style="color: var(--dim); text-align: center; padding: 40px; font-family: sans-serif;">No assigned flights found for the selected period.</div>';
-      return;
+    // 2. Tyhjennä piilotettu container (ei enää käytössä)
+    if (container) {
+      container.innerHTML = '';
     }
 
-    const cachedOFPs = typeof getCachedOFPs === 'function' ? await getCachedOFPs(true) : [];
-    const todayStr = formatDateLocal(new Date());
-
-    let html = `
-      <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 14px;">
-        <thead style="background: var(--panel); position: sticky; top: 0; z-index: 10;">
-          <tr>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">Date</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">Flight</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">Routing</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">STD</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">STA</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">Block</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent);">Aircraft</th>
-            <th style="padding: 12px 15px; border-bottom: 1px solid var(--border); color: var(--accent); text-align: right;">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-    `;
-
-    flights.forEach(f => {
-      if (!f || typeof f !== 'object') return;
-
-      const dateStr = f.StdLt ? String(f.StdLt).split('T')[0] : (f.Date ? String(f.Date).split('T')[0] : 'Unknown');
-      const carrier = String(f.CarrierCode || f.carrierCode || '').trim();
-      const fltNo = String(f.FlightNumber || f.flightNumber || '').trim();
-      const flightNum = (carrier && fltNo.startsWith(carrier)) ? fltNo : `${carrier}${fltNo}`;
-
-      const depStn = String(f.DepartureStationIcaoCode || f.DepartureStationCode || 'XXXX').trim();
-      const arrStn = String(f.ArrivalStationIcaoCode || f.ArrivalStationCode || 'XXXX').trim();
-      const routing = `${depStn} ➔ ${arrStn}`;
-
-      const stdStr = f.StdLt && String(f.StdLt).includes('T') ? String(f.StdLt).split('T')[1].substring(0, 5) : (String(f.Std || '--:--'));
-      const staStr = f.StaLt && String(f.StaLt).includes('T') ? String(f.StaLt).split('T')[1].substring(0, 5) : (String(f.Sta || '--:--'));
-
-      const aircraft = String(f.RegistrationNumber || f.AircraftDescription || 'TBA').trim();
-
-      // Block time
-      let blockTime = '--:--';
-      const durationMins = Number(f.DurationMinutes);
-      if (!isNaN(durationMins) && durationMins > 0) {
-        const hrs = Math.floor(durationMins / 60);
-        const mins = durationMins % 60;
-        blockTime = `${hrs}h ${String(mins).padStart(2, '0')}m`;
-      } else if (f.Std && f.Sta) {
-        const diffMs = new Date(f.Sta) - new Date(f.Std);
-        if (diffMs > 0) {
-          const hrs = Math.floor(diffMs / 3600000);
-          const mins = Math.floor((diffMs % 3600000) / 60000);
-          blockTime = `${hrs}h ${String(mins).padStart(2, '0')}m`;
+    // 3. Päivitä viikkonäkymä seuraavalla mikrotaskilla
+    //    (ettei nykyinen kutsupino häiriinny)
+    if (typeof renderWeekView === 'function') {
+      setTimeout(() => {
+        try { renderWeekView(); } catch (e) {
+          console.warn('[Roster] WeekView render failed:', e);
         }
-      }
+      }, 0);
+    }
 
-      const isFinalized = typeof isFlightFinalized === 'function' ? isFlightFinalized(f, cachedOFPs) : false;
-      const isToday = (dateStr === todayStr);
-      const todayRowHighlight = isToday ? 'border-left: 4px solid var(--success); background: rgba(50, 215, 75, 0.08);' : '';
-
-      const btnBaseStyle = `height: 30px; padding: 0 12px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 4px; border-radius: 6px; box-sizing: border-box; white-space: nowrap; transition: all 0.2s; cursor: pointer;`;
-
-      const flightId = f.ID || f.id || f.FlightID || f.FlightId || '';
-      const safeId = escapeQuotes(flightId);
-      const safeFlight = escapeQuotes(flightNum);
-      const safeDate = escapeQuotes(dateStr);
-      const safeReg = escapeQuotes(f.RegistrationNumber || '');
-
-      const actionHtml = isFinalized
-        ? `
-          <div style="display: flex; gap: 6px; justify-content: flex-end; align-items: center;">
-            <span style="color: var(--success, #32d74b); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px;">
-              ✔ Finalized
-            </span>
-            <button onclick="previewOFPFromSkyplan('${safeId}', '${safeFlight}', '${safeDate}', '${safeReg}')"
-                    style="${btnBaseStyle} background: var(--input); color: var(--text); border: 1px solid var(--border);">
-              View
-            </button>
-          </div>
-        `
-        : `
-          <div style="display: flex; gap: 6px; justify-content: flex-end; align-items: center;">
-            <button onclick="previewOFPFromSkyplan('${safeId}', '${safeFlight}', '${safeDate}', '${safeReg}')"
-                    style="${btnBaseStyle} background: var(--input); color: var(--text); border: 1px solid var(--border);">
-              Preview / Activate
-            </button>
-          </div>
-        `;
-
-      const aircraftClickable = (aircraft !== 'TBA' && aircraft !== '-')
-        ? `<span onclick="if(typeof navigateToADDTab === 'function') navigateToADDTab('${escapeQuotes(aircraft)}')" style="color: var(--accent); text-decoration: underline; cursor: pointer; font-weight: 600;">${aircraft}</span>`
-        : `<span style="color: var(--dim);">${aircraft}</span>`;
-
-      html += `
-        <tr class="assigned-flight-row" style="${todayRowHighlight}">
-          <td style="padding: 14px 12px; ${isToday ? 'font-weight: bold; color: var(--success);' : 'color: var(--text);'}">${dateStr} ${isToday ? '★' : ''}</td>
-          <td class="assigned-flight" style="padding: 14px 12px; font-weight: 600;">${flightNum}</td>
-          <td style="padding: 14px 12px; color: var(--text); letter-spacing: 0.5px;">${routing}</td>
-          <td class="assigned-time" style="padding: 14px 12px; color: var(--text);">${stdStr}</td>
-          <td class="assigned-sta" style="padding: 14px 12px; color: var(--text);">${staStr}</td>
-          <td class="assigned-block" style="padding: 14px 12px;">${blockTime}</td>
-          <td class="assigned-reg" style="padding: 14px 12px;">${aircraftClickable}</td>
-          <td style="padding: 10px 12px; text-align: right;">${actionHtml}</td>
-        </tr>
-      `;
-    });
-
-    html += `</tbody></table>`;
-    container.innerHTML = html;
-
-    if (typeof filterAssignedFlightsTable === 'function') filterAssignedFlightsTable();
+    // 4. Jos data on tyhjä ja online → käyttäjä näkee viikkonäkymän
+    //    "Roster ei ole synkattu" -viestin. Ei lisätoimenpiteitä.
   };
 
   // Offline early exit
@@ -1228,7 +1235,8 @@ window.autoImportCompletedFlights = autoImportCompletedFlights;
 /* ==============================================================
  * OFP PREVIEW · avaa OFP PDF-modaalissa
  * ============================================================== */
-window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tailNumber = '') {
+window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tailNumber = '', options = {}) {
+  const { forceRefresh = false } = options;
   let pdfUrl = null;
   let downloadedBytes = null;
 
@@ -1247,7 +1255,9 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
     let isFinalized = false;
     let isCached = false;
 
+    // 1. Yritä offline-cachea ensin (vain jos ei pakotettu refresh)
     const tryReadOffline = async () => {
+      if (forceRefresh) return null;
       if (typeof getPdfFromOfflineCache !== 'function') return null;
       try {
         const cached = await getPdfFromOfflineCache(flightId, flightNum, dateStr);
@@ -1260,7 +1270,7 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
       return null;
     };
 
-    if (!navigator.onLine) {
+    if (!navigator.onLine && !forceRefresh) {
       const cached = await tryReadOffline();
       if (cached) {
         downloadedBytes = cached.pdfBytes;
@@ -1270,22 +1280,19 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
       }
     }
 
+    // 2. Käytä jaettua PDF-cachea (tai hae jos forceRefresh)
     if (!pdfBlob) {
-      const token = typeof getValidSkyplanToken === 'function'
-        ? await getValidSkyplanToken().catch(() => null) : null;
-      if (typeof fetchSkyplanOFPBytes !== 'function') {
-        throw new Error("Skyplan download service is unavailable.");
+      if (typeof _getPDFBytesForFlight !== 'function') {
+        throw new Error('PDF-cache puuttuu (ofp-data.js ei latautunut)');
       }
+      const entry = await _getPDFBytesForFlight(flightId, { forceRefresh });
+      downloadedBytes = entry.bytes;
+      isFinalized = Boolean(entry.isFinalized);
 
-      const result = await fetchSkyplanOFPBytes(flightId, token, flightNum, dateStr);
-      if (result && result.pdfBytes && (result.pdfBytes.byteLength || result.pdfBytes.length || 0) > 500) {
-        downloadedBytes = result.pdfBytes;
-        isFinalized = Boolean(result.isFinalized);
-        isCached = Boolean(result.isCached);
-        pdfBlob = new Blob([result.pdfBytes], { type: 'application/pdf' });
-      } else {
+      if (!downloadedBytes || (downloadedBytes.byteLength || downloadedBytes.length || 0) < 500) {
         throw new Error("Unable to retrieve valid OFP PDF data.");
       }
+      pdfBlob = new Blob([downloadedBytes], { type: 'application/pdf' });
     }
 
     if (!pdfBlob || pdfBlob.size < 500) {
@@ -1320,19 +1327,25 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
 
     if (isFinalized) {
       modalConfig.confirmText = 'Close';
-      modalConfig.cancelText = 'Open Fullscreen';
-      modalConfig.onCancel = () => window.open(pdfUrl, '_blank');
+      modalConfig.cancelText = '⟳ Refresh';
+      modalConfig.onCancel = () => {
+        cleanupUrl();
+        previewOFPFromSkyplan(flightId, flightNum, dateStr, tailNumber, { forceRefresh: true });
+      };
       modalConfig.onConfirm = () => cleanupUrl();
     } else {
       modalConfig.confirmText = 'Activate OFP';
-      modalConfig.cancelText = 'Close';
+      modalConfig.cancelText = '⟳ Refresh';
       modalConfig.onConfirm = () => {
         cleanupUrl();
         if (typeof importOFPFromSkyplan === 'function') {
           importOFPFromSkyplan(flightId, flightNum, dateStr, tailNumber, downloadedBytes);
         }
       };
-      modalConfig.onCancel = () => cleanupUrl();
+      modalConfig.onCancel = () => {
+        cleanupUrl();
+        previewOFPFromSkyplan(flightId, flightNum, dateStr, tailNumber, { forceRefresh: true });
+      };
     }
 
     if (typeof createModal === 'function') {

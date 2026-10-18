@@ -39,6 +39,14 @@ function mergeRosterFlights(existing, incoming) {
 }
 window.mergeRosterFlights = mergeRosterFlights;
 
+function _rosterEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /* ---------------- Vertaa vanhaa ja uutta rosteria ---------------- */
 function compareRosters(oldList, newList) {
   const oldMap = new Map((oldList || []).map(f => [
@@ -152,39 +160,39 @@ function showRosterChangeModal(changes, previousSyncTime) {
       </div>`;
   };
 
-  const renderFlightLine = (item) => {
-    const s = _fmtFlightShort(item.flight);
-    return `
-      <div class="rc-item">
-        <div class="rc-item-main">
-          <span class="rc-flight">${s.flightNum || '–'}</span>
-          <span class="rc-route">${s.dep} → ${s.arr}</span>
-          <span class="rc-time">${s.std}${s.stdTime ? ' · ' + s.stdTime : ''}</span>
-        </div>
-      </div>`;
-  };
+const renderFlightLine = (item) => {
+  const s = _fmtFlightShort(item.flight);
+  return `
+    <div class="rc-item">
+      <div class="rc-item-main">
+        <span class="rc-flight">${_rosterEsc(s.flightNum) || '–'}</span>
+        <span class="rc-route">${_rosterEsc(s.dep)} → ${_rosterEsc(s.arr)}</span>
+        <span class="rc-time">${_rosterEsc(s.std)}${s.stdTime ? ' · ' + _rosterEsc(s.stdTime) : ''}</span>
+      </div>
+    </div>`;
+};
 
-  const renderChangedLine = (item) => {
-    const s = _fmtFlightShort(item.flight);
-    return `
-      <div class="rc-item rc-item-changed">
-        <div class="rc-item-main">
-          <span class="rc-flight">${s.flightNum || '–'}</span>
-          <span class="rc-route">${s.dep} → ${s.arr}</span>
-          <span class="rc-time">${s.std}${s.stdTime ? ' · ' + s.stdTime : ''}</span>
-        </div>
-        <div class="rc-diffs">
-          ${item.diffs.map(d => `
-            <div class="rc-diff">
-              <span class="rc-diff-label">${d.label}</span>
-              <span class="rc-diff-old">${d.old}</span>
-              <span class="rc-diff-arrow">→</span>
-              <span class="rc-diff-new">${d.new}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>`;
-  };
+const renderChangedLine = (item) => {
+  const s = _fmtFlightShort(item.flight);
+  return `
+    <div class="rc-item rc-item-changed">
+      <div class="rc-item-main">
+        <span class="rc-flight">${_rosterEsc(s.flightNum) || '–'}</span>
+        <span class="rc-route">${_rosterEsc(s.dep)} → ${_rosterEsc(s.arr)}</span>
+        <span class="rc-time">${_rosterEsc(s.std)}${s.stdTime ? ' · ' + _rosterEsc(s.stdTime) : ''}</span>
+      </div>
+      <div class="rc-diffs">
+        ${item.diffs.map(d => `
+          <div class="rc-diff">
+            <span class="rc-diff-label">${_rosterEsc(d.label)}</span>
+            <span class="rc-diff-old">${_rosterEsc(d.old)}</span>
+            <span class="rc-diff-arrow">→</span>
+            <span class="rc-diff-new">${_rosterEsc(d.new)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+};
 
   // Poista vanha popup jos sellainen on jo
   const existing = document.getElementById('roster-change-popup');
@@ -240,18 +248,27 @@ window.showRosterChangeModal = showRosterChangeModal;
  * ==============================================================
  * Air Astana API ei palauta dataa yli ~30-60 päivän aikaväliltä.
  * Haetaan 3 kuukautta kolmella erillisellä kutsulla.
+ *
+ * - Timeout 12 s per kuukausi (AbortController)
+ * - Sietää verkkokatkokset, tyhjät vastaukset ja timeoutit
+ * - Käyttää vain sallittuja lentoyhtiöitä
  * ============================================================== */
 async function _fetchRosterRange(monthOffset) {
-  const token = typeof getValidSkyplanToken === 'function'
+  // 1. Token
+  const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null)
     : localStorage.getItem('skyplan_token');
   if (!token) return [];
 
-  const payload = decodeJWT(token) || {};
+  // 2. Employee ID
+  const payload = (typeof decodeJWT === 'function')
+    ? (decodeJWT(token) || {})
+    : {};
   const empId = payload.employeeid || payload.EmployeeID || payload.employeeId
              || payload.nameid || payload.sub;
   if (!empId) return [];
 
+  // 3. Aikaväli
   const now = new Date();
   const targetMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
   const firstDay = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
@@ -263,15 +280,27 @@ async function _fetchRosterRange(monthOffset) {
   const fromStr = fmt(firstDay);
   const toStr   = fmt(lastDay);
 
+  // 4. Fetch + timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
   try {
-    const resp = await fetch('https://kcskyplanapi.airastana.com/api/v1/crew-roster-flights-details', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ EmployeeID: String(empId), From: fromStr, To: toStr })
-    });
+    const resp = await fetch(
+      'https://kcskyplanapi.airastana.com/api/v1/crew-roster-flights-details',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          EmployeeID: String(empId),
+          From: fromStr,
+          To: toStr
+        }),
+        signal: controller.signal
+      }
+    );
 
     if (!resp.ok) {
       console.warn(`[Roster] Kuukausi ${monthOffset}: HTTP ${resp.status}`);
@@ -281,15 +310,24 @@ async function _fetchRosterRange(monthOffset) {
     const data = await resp.json();
     const flights = Array.isArray(data.Flights) ? data.Flights : [];
 
+    // 5. Suodata sallitut lentoyhtiöt
     const allowedCarriers = ['KC', 'KZR', 'AYN', 'FS'];
     const filtered = flights.filter(f =>
-      f && allowedCarriers.includes(String(f.CarrierCode || '').trim().toUpperCase())
+      f && allowedCarriers.includes(
+        String(f.CarrierCode || '').trim().toUpperCase()
+      )
     );
 
     return filtered;
   } catch (e) {
-    console.warn(`[Roster] Kuukausi ${monthOffset} epäonnistui:`, e.message);
+    if (e.name === 'AbortError') {
+      console.warn(`[Roster] Kuukausi ${monthOffset}: timeout 12 s`);
+    } else {
+      console.warn(`[Roster] Kuukausi ${monthOffset} epäonnistui:`, e.message);
+    }
     return [];
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -359,6 +397,18 @@ async function forceRosterSync(options = {}) {
       localStorage.setItem('assigned_flights_cache', JSON.stringify(merged));
       localStorage.setItem('assigned_flights_cache_time',
         new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+      const dates = allFlights
+        .map(f => String(f.StdLt || f.Std || '').split('T')[0])
+        .filter(Boolean)
+        .sort();
+      if (dates.length) {
+        localStorage.setItem('assigned_flights_cache_range', JSON.stringify({
+          from: dates[0],
+          to:   dates[dates.length - 1],
+          at:   new Date().toISOString()
+        }));
+      }
     } catch (e) {
       console.warn('[RosterSync] Cache-tallennus epäonnistui:', e);
     }
@@ -409,6 +459,7 @@ async function forceRosterSync(options = {}) {
  * ============================================================== */
 async function autoLoadMonthRoster() {
   if (window._rosterAutoLoadDone) return;
+  if (window._rosterAutoLoadInFlight) return; 
   if (!navigator.onLine) return;
 
   const token = (typeof getValidSkyplanToken === 'function')
@@ -416,12 +467,15 @@ async function autoLoadMonthRoster() {
     : localStorage.getItem('skyplan_token');
   if (!token) return;
 
-  window._rosterAutoLoadDone = true;
+  window._rosterAutoLoadInFlight = true;
 
   try {
     await forceRosterSync({ silent: true, forceCompare: true });
+    window._rosterAutoLoadDone = true;   
   } catch (e) {
     console.warn('[AutoLoad] failed:', e);
+  } finally {
+    window._rosterAutoLoadInFlight = false;
   }
 }
 

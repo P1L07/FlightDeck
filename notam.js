@@ -1,37 +1,46 @@
 /* ==============================================================
- * NOTAM MODULE · PocketWorld API
+ * NOTAM MODULE · AutoRouter API (proxyn kautta)
  * ==============================================================
- * PocketWorld tarjoaa avoimen CORS-rajapinnan NOTAM-datalle.
- * Palauttaa Q-line-jäsennellyn JSONin 17 FIR:stä.
- *
- * Worker välittää pyynnön → ei CORS-ongelmia.
+ * - Hakee NOTAMit AutoRouter API:sta Worker-proxyn kautta
+ * - 15 min TTL + 72 h stale-fallback
+ * - Q-line parseri + kategorisointi
+ * - Stale-cache fallback kun API epäonnistuu
+ * - Dynaaminen AUTOROUTER_KEY (ei const)
  * ============================================================== */
+'use strict';
 
 const NOTAM_CACHE_KEY = 'notam_cache_v1';
-const NOTAM_CACHE_TTL = 15 * 60 * 1000;    // 15 min (PocketWorldin oma cache)
-const NOTAM_MAX_AGE   = 72 * 60 * 60 * 1000; // 72 h
+const NOTAM_CACHE_TTL = 15 * 60 * 1000;    // 15 min
+const NOTAM_MAX_AGE   = 72 * 60 * 60 * 1000; // 72 h (stale fallback)
 
+/* ==============================================================
+ * AutoRouter-avaimen hallinta
+ * ============================================================== */
 function _loadAutoRouterKey() {
   try { return localStorage.getItem('autorouter_key') || ''; }
   catch (e) { return ''; }
 }
+
 function saveAutoRouterKey() {
   const input = document.getElementById('autorouter_key');
   if (!input) return;
   const key = (input.value || '').trim();
   try {
     localStorage.setItem('autorouter_key', key);
-    if (typeof showToast === 'function') showToast('AutoRouter-avain tallennettu.', 'success');
+    if (typeof showToast === 'function') {
+      showToast('AutoRouter-avain tallennettu.', 'success');
+    }
   } catch (e) {
-    if (typeof showToast === 'function') showToast('Tallennus epäonnistui.', 'error');
+    if (typeof showToast === 'function') {
+      showToast('Tallennus epäonnistui.', 'error');
+    }
   }
 }
 window.saveAutoRouterKey = saveAutoRouterKey;
 
-// Käytä avainta dynaamisesti
-const AUTOROUTER_KEY = _loadAutoRouterKey();
-
-/* Käytetään samaa Worker-osoitetta kuin säämoduulissa */
+/* ==============================================================
+ * Proxy
+ * ============================================================== */
 function _notamProxied(targetUrl) {
   const base = (typeof WX_PROXY !== 'undefined' && WX_PROXY)
     ? WX_PROXY
@@ -39,14 +48,18 @@ function _notamProxied(targetUrl) {
   return `${base}/?url=${encodeURIComponent(targetUrl)}`;
 }
 
-/* ---------------- Cache ---------------- */
+/* ==============================================================
+ * Cache
+ * ============================================================== */
 function _notamCacheRead() {
   try { return JSON.parse(localStorage.getItem(NOTAM_CACHE_KEY) || '{}') || {}; }
   catch (e) { return {}; }
 }
 function _notamCacheWrite(c) {
-  try { localStorage.setItem(NOTAM_CACHE_KEY, JSON.stringify(c)); } catch (e) {}
+  try { localStorage.setItem(NOTAM_CACHE_KEY, JSON.stringify(c)); }
+  catch (e) {}
 }
+
 function _notamCacheGet(icao) {
   const c = _notamCacheRead();
   const hit = c[icao];
@@ -54,10 +67,18 @@ function _notamCacheGet(icao) {
   if (Date.now() - hit.t > NOTAM_CACHE_TTL) return null;
   return hit.data;
 }
+
+function _notamCacheGetStale(icao) {
+  const c = _notamCacheRead();
+  const hit = c[icao];
+  if (!hit) return null;
+  if (Date.now() - hit.t > NOTAM_MAX_AGE) return null;
+  return hit.data;
+}
+
 function _notamCacheSet(icao, data) {
   const c = _notamCacheRead();
   c[icao] = { t: Date.now(), data };
-  // Rajaa 100 kenttään
   const keys = Object.keys(c);
   if (keys.length > 100) {
     keys.sort((a, b) => c[a].t - c[b].t)
@@ -67,101 +88,76 @@ function _notamCacheSet(icao, data) {
   _notamCacheWrite(c);
 }
 
-
+/* ==============================================================
+ * Hae NOTAMit
+ * ============================================================== */
 async function fetchNOTAMs(icao) {
   if (!icao || String(icao).length !== 4) {
     throw new Error('Invalid ICAO code');
   }
   const key = String(icao).toUpperCase().trim();
 
+  // 1. Fresh cache
   const cached = _notamCacheGet(key);
   if (cached) return cached;
 
-  // AutoRouter: itemas-parametri suodattaa ICAO/FIR-tasolla
+  // 2. Hae dynaaminen AutoRouter-avain (ei enää const!)
+  const autorouterKey = _loadAutoRouterKey();
+
   const itemas = encodeURIComponent(JSON.stringify([key]));
   const target = `https://api.autorouter.aero/v1.0/notam?itemas=${itemas}&offset=0&limit=100`;
 
   const headers = {};
-  if (AUTOROUTER_KEY && AUTOROUTER_KEY !== 'ASETA_TÄHÄN_API_KEY') {
-    headers['Authorization'] = `Bearer ${AUTOROUTER_KEY}`;
+  if (autorouterKey && autorouterKey !== 'ASETA_TÄHÄN_API_KEY') {
+    headers['Authorization'] = `Bearer ${autorouterKey}`;
   }
 
-  const resp = await fetch(_notamProxied(target), { headers });
-  if (!resp.ok) throw new Error(`NOTAM HTTP ${resp.status}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-  const raw = await resp.json();
+  try {
+    const resp = await fetch(_notamProxied(target), {
+      headers,
+      signal: controller.signal
+    });
 
-  // AutoRouter palauttaa { rows: [...], rowcount: N } tai suoraan taulukon
-  const list = Array.isArray(raw) ? raw
-             : Array.isArray(raw?.rows) ? raw.rows
-             : Array.isArray(raw?.notams) ? raw.notams
-             : Array.isArray(raw?.data) ? raw.data
-             : [];
+    if (!resp.ok) throw new Error(`NOTAM HTTP ${resp.status}`);
 
-  const normalized = list.map(n => _normalizeAutoRouterNOTAM(n, key))
-    .filter(n => n && n.text);
+    const raw = await resp.json();
 
-  _notamCacheSet(key, normalized);
-  return normalized;
+    // Joustava vastauksen käsittely
+    const list = Array.isArray(raw) ? raw
+               : Array.isArray(raw?.rows) ? raw.rows
+               : Array.isArray(raw?.notams) ? raw.notams
+               : Array.isArray(raw?.data) ? raw.data
+               : [];
+
+    const normalized = list
+      .map(n => _normalizeAutoRouterNOTAM(n, key))
+      .filter(n => n && n.text);
+
+    _notamCacheSet(key, normalized);
+    return normalized;
+  } catch (e) {
+    // 3. Stale-cache fallback
+    const stale = _notamCacheGetStale(key);
+    if (stale) {
+      console.warn(`[NOTAM] Fetch epäonnistui (${e.message}) — käytetään stale-cachea`);
+      return stale;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 window.fetchNOTAMs = fetchNOTAMs;
 
-/* ---------------- Normalisoi yksi NOTAM ---------------- */
-function _normalizeNOTAM(n, icao) {
-  if (!n || typeof n !== 'object') return null;
-
-  // PocketWorld saattaa käyttää eri kenttänimiä — tuetaan useita
-  const id       = n.id || n.notamId || n.number || n.notamNumber || '';
-  const text     = n.text || n.rawText || n.raw || n.message || n.notamText || '';
-  const qline    = n.qline || n.qLine || n.q_line || '';
-  const fir      = n.fir || n.FIR || '';
-  const location = n.location || n.icao || n.icaoLocation || icao;
-  const type     = n.type || n.notamType || '';
-  const from     = n.from || n.effectiveStart || n.startDate || n.startTime || '';
-  const to       = n.to   || n.effectiveEnd   || n.endDate   || n.endTime   || '';
-  const purpose  = n.purpose || '';
-  const scope    = n.scope || '';
-  const lower    = n.lowerLimit || n.lower || '';
-  const upper    = n.upperLimit || n.upper || '';
-  const coord    = n.coordinates || n.coords || '';
-  const radius   = n.radius || '';
-
-  // Poimi ICAO tekstistä jos ei ole
-  if (!location && text) {
-    const m = String(text).match(/\b([A-Z]{4})\b/);
-    if (m) location = m[1];
-  }
-
-  // Q-line parseri (jos qline on raakana)
-  let qlineParsed = null;
-  if (qline && typeof qline === 'string') {
-    qlineParsed = _parseQLine(qline);
-  }
-
-  return {
-    id: String(id),
-    text: String(text),
-    qline: String(qline),
-    qlineParsed,
-    fir: String(fir).toUpperCase(),
-    location: String(location).toUpperCase(),
-    type: String(type).toUpperCase(),
-    from: from || '',
-    to: to || '',
-    purpose,
-    scope,
-    lowerLimit: lower,
-    upperLimit: upper,
-    coordinates: coord,
-    radius
-  };
-}
-
-/* ---------------- AutoRouter NOTAM -normalisointi ---------------- */
+/* ==============================================================
+ * Normalisoi AutoRouter NOTAM
+ * ============================================================== */
 function _normalizeAutoRouterNOTAM(n, icao) {
   if (!n || typeof n !== 'object') return null;
 
-  // AutoRouter-kentät (v1.0 API)
   const id       = n.id || n.notam_id || n.notamNumber || n.notamId || '';
   const text     = n.iteme || n.text || n.body || n.raw || n.itemE || '';
   const qline    = n.itemq || n.qline || n.qLine || '';
@@ -175,7 +171,6 @@ function _normalizeAutoRouterNOTAM(n, icao) {
   const coord    = n.coordinates || n.coords || '';
   const radius   = n.radius || '';
 
-  // Q-line parsed (jos saamme raakana)
   let qlineParsed = null;
   if (qline && typeof qline === 'string') {
     qlineParsed = _parseQLine(qline);
@@ -198,27 +193,29 @@ function _normalizeAutoRouterNOTAM(n, icao) {
   };
 }
 
-/* ---------------- Q-line parseri ---------------- */
-function _parseQLine(q) {
-  // ICAO Q-line: Q) KJFK/QMALC/IV/NBO/A/000/999/4038N07346W005
-  // Esim: Q) UAAA/QMALC/IV/NBO/A/000/999/4315N07654E005
+/* ==============================================================
+ * Q-line parseri
+ * ==============================================================
+ * KORJATTU: käyttää eri muuttujanimiä sisäkkäisessä scopessa
+ * (aiemmin `const q = parts[0]` shadowasi parametrin `q` → SyntaxError)
+ * ============================================================== */
+function _parseQLine(qline) {
   try {
-    const s = String(q).trim();
-    // Poista "Q) " jos on
+    const s = String(qline).trim();
     const body = s.replace(/^Q\)\s*/, '');
     const parts = body.split('/');
 
-    const q = parts[0] || '';  // esim. KJFK
-    const code = parts[1] || ''; // esim. QMALC
-    const traffic = parts[2] || ''; // IV
-    const purpose = parts[3] || ''; // NBO
-    const scope = parts[4] || ''; // A
-    const lower = parts[5] || '';
-    const upper = parts[6] || '';
-    const coord = parts[7] || ''; // 4038N07346W
-    const radius = parts[8] || '';
+    const icaoPart = parts[0] || '';
+    const code     = parts[1] || '';
+    const traffic  = parts[2] || '';
+    const purpose  = parts[3] || '';
+    const scope    = parts[4] || '';
+    const lower    = parts[5] || '';
+    const upper    = parts[6] || '';
+    const coord    = parts[7] || '';
+    const radius   = parts[8] || '';
 
-    // Pura coordinaatit: 4038N07346W → { lat: 40.633, lon: -73.766 }
+    // Pura koordinaatit: 4038N07346W → { lat, lon }
     let lat = null, lon = null;
     const cm = coord.match(/^(\d{2})(\d{2})([NS])(\d{3})(\d{2})([EW])$/);
     if (cm) {
@@ -229,88 +226,162 @@ function _parseQLine(q) {
     }
 
     return {
-      raw: s, icao: q, code, traffic, purpose, scope,
-      lower, upper, coord, radius, lat, lon
+      raw: s,
+      icao: icaoPart,
+      code,
+      traffic,
+      purpose,
+      scope,
+      lower,
+      upper,
+      coord,
+      radius,
+      lat,
+      lon
     };
   } catch (e) {
-    return { raw: String(q) };
+    return { raw: String(qline) };
   }
 }
 
-/* ---------------- Järjestä NOTAMit ---------------- */
+/* ==============================================================
+ * Järjestä ja suodata
+ * ============================================================== */
 function _sortNOTAMs(list) {
   return list.slice().sort((a, b) => {
-    // 1) Kiireellisyys: NOTAMit joissa on "RWY" tai "CLSD" ensin
     const urgentA = /RWY|CLSD|CLOSED|FUEL|AVBL|U\/S/i.test(a.text) ? 1 : 0;
     const urgentB = /RWY|CLSD|CLOSED|FUEL|AVBL|U\/S/i.test(b.text) ? 1 : 0;
     if (urgentA !== urgentB) return urgentB - urgentA;
 
-    // 2) Sitten voimassaoloajan mukaan (uusimmat ensin)
     const ta = new Date(a.from).getTime() || 0;
     const tb = new Date(b.from).getTime() || 0;
     return tb - ta;
   });
 }
 
-/* ---------------- Suodata vanhentuneet ---------------- */
+/* Parsi NOTAM-muotoinen aikaleima (YYMMDDHHMM) */
+function _parseNotamTime(str) {
+  if (!str) return NaN;
+  const s = String(str).replace(/\D/g, '');
+  if (s.length === 10) {
+    const yy = parseInt(s.slice(0, 2), 10);
+    const mo = parseInt(s.slice(2, 4), 10) - 1;
+    const dd = parseInt(s.slice(4, 6), 10);
+    const hh = parseInt(s.slice(6, 8), 10);
+    const mm = parseInt(s.slice(8, 10), 10);
+    const year = yy > 50 ? 1900 + yy : 2000 + yy;
+    return new Date(year, mo, dd, hh, mm).getTime();
+  }
+  return NaN;
+}
+
+function _notamToTimeMs(str) {
+  if (!str) return NaN;
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) return d.getTime();
+  return _parseNotamTime(str);
+}
+
 function _filterActive(list) {
   const now = Date.now();
   return list.filter(n => {
-    if (n.to) {
-      const t = new Date(n.to).getTime();
-      if (isFinite(t) && t < now) return false;
-    }
+    if (!n.to) return true;
+    const t = _notamToTimeMs(n.to);
+    if (isFinite(t) && t < now) return false;
     return true;
   });
 }
 
 /* ==============================================================
- * UI · NOTAM-lista
+ * Kategorisointi (Q-koodi + fallback)
  * ============================================================== */
-
 function _notamCategory(n) {
   const t = String(n.text || '').toUpperCase();
+  const code = (n.qlineParsed?.code || '').toUpperCase();
   const q = String(n.qline || '').toUpperCase();
 
-  // Q-koodi kertoo tarkemmin kuin pelkkä teksti
-  if (q.includes('/QR'))  return { k: 'RWY', l: 'Kiitotie', c: 'var(--error)' };
-  if (q.includes('/QN'))  return { k: 'NAV', l: 'Navigointi', c: 'var(--accent)' };
-  if (q.includes('/QF'))  return { k: 'SVC', l: 'Palvelut', c: 'var(--warning)' };
-  if (q.includes('/QO'))  return { k: 'OBST', l: 'Este', c: 'var(--warning)' };
-  if (q.includes('/QA'))  return { k: 'AIR', l: 'Ilmatila', c: 'var(--error)' };
-  if (q.includes('/QC'))  return { k: 'COM', l: 'Viestintä', c: 'var(--accent)' };
-  if (q.includes('/QW'))  return { k: 'WARN', l: 'Varoitus', c: 'var(--error)' };
+  // 1. Q-koodi (parsittu)
+  if (code) {
+    if (code.startsWith('QR')) return { k: 'RWY',  l: 'Kiitotie',   c: 'var(--error)' };
+    if (code.startsWith('QL')) return { k: 'LGT',  l: 'Valot',      c: 'var(--warning)' };
+    if (code.startsWith('QN')) return { k: 'NAV',  l: 'Navigointi', c: 'var(--accent)' };
+    if (code.startsWith('QF')) return { k: 'SVC',  l: 'Palvelut',   c: 'var(--warning)' };
+    if (code.startsWith('QO')) return { k: 'OBST', l: 'Este',       c: 'var(--warning)' };
+    if (code.startsWith('QA')) return { k: 'AIR',  l: 'Ilmatila',   c: 'var(--error)' };
+    if (code.startsWith('QC')) return { k: 'COM',  l: 'Viestintä',  c: 'var(--accent)' };
+    if (code.startsWith('QS') || code.startsWith('QW')) {
+      return { k: 'WARN', l: 'Varoitus', c: 'var(--error)' };
+    }
+  }
 
-  // Fallback tekstianalyysiin
-  if (/RWY|TWY|APRON|STAND|CLSD|CLOSED/.test(t)) return { k: 'RWY', l: 'Kiitotie', c: 'var(--error)' };
+  // 2. Q-koodi raakana
+  if (/\/QR/.test(q)) return { k: 'RWY',  l: 'Kiitotie',   c: 'var(--error)' };
+  if (/\/QN/.test(q)) return { k: 'NAV',  l: 'Navigointi', c: 'var(--accent)' };
+  if (/\/QF/.test(q)) return { k: 'SVC',  l: 'Palvelut',   c: 'var(--warning)' };
+  if (/\/QO/.test(q)) return { k: 'OBST', l: 'Este',       c: 'var(--warning)' };
+  if (/\/QA/.test(q)) return { k: 'AIR',  l: 'Ilmatila',   c: 'var(--error)' };
+  if (/\/QC/.test(q)) return { k: 'COM',  l: 'Viestintä',  c: 'var(--accent)' };
+  if (/\/QW|\/QS/.test(q)) return { k: 'WARN', l: 'Varoitus', c: 'var(--error)' };
+
+  // 3. Teksti-fallback
+  if (/RWY|TWY|APRON|STAND|CLSD|CLOSED/.test(t)) return { k: 'RWY',  l: 'Kiitotie',   c: 'var(--error)' };
   if (/NAV|VOR|NDB|ILS|GPS|GNSS|DME|TACAN/.test(t)) return { k: 'NAV', l: 'Navigointi', c: 'var(--accent)' };
-  if (/FUEL|AVBL|U\/S|SERVICE/.test(t)) return { k: 'SVC', l: 'Palvelut', c: 'var(--warning)' };
-  if (/OBST|CRANE|TOWER/.test(t)) return { k: 'OBST', l: 'Este', c: 'var(--warning)' };
+  if (/FUEL|AVBL|U\/S|SERVICE/.test(t))          return { k: 'SVC',  l: 'Palvelut',   c: 'var(--warning)' };
+  if (/OBST|CRANE|TOWER/.test(t))                return { k: 'OBST', l: 'Este',       c: 'var(--warning)' };
   if (/AIRSPACE|TFR|RESTRICTED|PROHIBITED/.test(t)) return { k: 'AIR', l: 'Ilmatila', c: 'var(--error)' };
-  if (/COM|FREQ|ATIS/.test(t)) return { k: 'COM', l: 'Viestintä', c: 'var(--accent)' };
+  if (/COM|FREQ|ATIS/.test(t))                   return { k: 'COM',  l: 'Viestintä',  c: 'var(--accent)' };
+
   return { k: 'GEN', l: 'Yleinen', c: 'var(--dim)' };
 }
 
+/* ==============================================================
+ * Formatointi
+ * ============================================================== */
 function _fmtNotamTime(iso) {
   if (!iso) return '–';
   const d = new Date(iso);
-  if (isNaN(d)) {
-    // Yritä NOTAM-muotoa YYMMDDHHMM
-    const s = String(iso).replace(/\D/g, '');
-    if (s.length === 10) {
-      const yy = parseInt(s.slice(0, 2), 10);
-      const mo = parseInt(s.slice(2, 4), 10) - 1;
-      const dd = parseInt(s.slice(4, 6), 10);
-      const hh = parseInt(s.slice(6, 8), 10);
-      const mm = parseInt(s.slice(8, 10), 10);
-      const year = yy > 50 ? 1900 + yy : 2000 + yy;
-      return new Date(year, mo, dd, hh, mm).toLocaleString();
-    }
-    return String(iso);
-  }
-  return d.toLocaleString();
+  if (!isNaN(d.getTime())) return d.toLocaleString();
+
+  // NOTAM-muoto YYMMDDHHMM
+  const ms = _parseNotamTime(iso);
+  if (isFinite(ms)) return new Date(ms).toLocaleString();
+
+  return String(iso);
 }
 
+function _esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _highlightNotam(text) {
+  const esc = _esc(text);
+  const keys = [
+    'CLSD', 'CLOSED', 'U/S', 'UNSERVICEABLE', 'NOT AVBL', 'FUEL', 'RWY',
+    'RESTRICTED', 'PROHIBITED', 'TFR', 'CAUTION', 'HAZARD', 'OBST'
+  ];
+  let out = esc;
+  for (const k of keys) {
+    const escapedKey = k.replace(/[/\\^$.*+?()[\]{}|]/g, '\\$&');
+    const re = new RegExp(`\\b${escapedKey}\\b`, 'gi');
+    out = out.replace(re, m =>
+      `<span style="color:var(--error); font-weight:700;">${m}</span>`);
+  }
+  return out;
+}
+
+function _truncate(s, max) {
+  const str = String(s || '');
+  return str.length > max ? str.slice(0, max - 1) + '…' : str;
+}
+
+/* ==============================================================
+ * NOTAM-listan renderöinti
+ * ============================================================== */
 function _renderNotamList(container, notams, icao) {
   if (!container) return;
 
@@ -320,7 +391,7 @@ function _renderNotamList(container, notams, icao) {
         <div style="font-size:32px; margin-bottom:8px;">✓</div>
         <div style="font-weight:600; color:var(--success);">Ei aktiivisia NOTAMeja</div>
         <div style="font-size:12px; color:var(--dim); margin-top:4px;">
-          ${icao || ''}
+          ${_esc(icao || '')}
         </div>
       </div>`;
     return;
@@ -355,28 +426,6 @@ function _renderNotamList(container, notams, icao) {
   container.innerHTML = html;
 }
 
-function _esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/* Korosta kriittiset sanat NOTAM-tekstissä */
-function _highlightNotam(text) {
-  const esc = _esc(text);
-  const keys = [
-    'CLSD','CLOSED','U/S','UNSERVICEABLE','NOT AVBL','FUEL','RWY',
-    'RESTRICTED','PROHIBITED','TFR','CAUTION','HAZARD','OBST'
-  ];
-  let out = esc;
-  for (const k of keys) {
-    const re = new RegExp(`\\b${k}\\b`, 'gi');
-    out = out.replace(re, m =>
-      `<span style="color:var(--error); font-weight:700;">${m}</span>`);
-  }
-  return out;
-}
-
 /* ==============================================================
  * Sää-välilehden NOTAM-osio
  * ============================================================== */
@@ -394,7 +443,7 @@ async function loadNOTAMsForStation(icao) {
     <div class="notam-loading">
       <div class="loader-spinner"><span></span><span></span><span></span></div>
       <div style="margin-top:8px; font-size:13px; color:var(--dim);">
-        Haetaan NOTAMeja ${code}…
+        Haetaan NOTAMeja ${_esc(code)}…
       </div>
     </div>`;
 
@@ -433,18 +482,18 @@ async function loadHomeNOTAMs(icao) {
   try {
     const notams = await fetchNOTAMs(code);
     const active = _filterActive(notams);
+
     if (!active.length) {
       container.innerHTML = `
         <div class="notam-empty" style="padding:20px; text-align:center;">
           <div style="font-size:22px; color:var(--success);">✓</div>
           <div style="font-size:12px; color:var(--dim); margin-top:4px;">
-            Ei aktiivisia NOTAMeja · ${code}
+            Ei aktiivisia NOTAMeja · ${_esc(code)}
           </div>
         </div>`;
       return;
     }
 
-    // Näytä korkeintaan 3 tärkeintä
     const sorted = _sortNOTAMs(active).slice(0, 3);
     container.innerHTML = sorted.map(n => {
       const cat = _notamCategory(n);
@@ -464,13 +513,24 @@ async function loadHomeNOTAMs(icao) {
         </div>`;
     }).join('');
 
-    // Jos enemmän kuin 3, näytä "Näytä kaikki" -nappi
     if (active.length > 3) {
-      container.insertAdjacentHTML('beforeend', `
-        <button class="btn-ghost" style="width:100%; margin-top:8px; font-size:12px;"
-          onclick="switchTab('weather'); document.getElementById('wx-icao').value='${code}'; loadWeatherForStation();">
-          Näytä kaikki (${active.length}) →
-        </button>`);
+      // Turvallinen onclick: käytetään data-attribuuttia + erillistä
+      // addEventListeneriä (ei inline-onclick, ei XSS-riskiä)
+      const btn = document.createElement('button');
+      btn.className = 'btn-ghost';
+      btn.style.cssText = 'width:100%; margin-top:8px; font-size:12px;';
+      btn.textContent = `Näytä kaikki (${active.length}) →`;
+      btn.dataset.icao = code;
+      btn.addEventListener('click', () => {
+        if (typeof switchTab === 'function') switchTab('weather');
+        const input = document.getElementById('wx-icao');
+        if (input) input.value = btn.dataset.icao;
+        if (typeof loadWeatherForStation === 'function') loadWeatherForStation();
+        if (typeof loadNOTAMsForStation === 'function') {
+          loadNOTAMsForStation(btn.dataset.icao);
+        }
+      });
+      container.appendChild(btn);
     }
   } catch (err) {
     console.warn('[Home NOTAM]', err);
@@ -481,8 +541,3 @@ async function loadHomeNOTAMs(icao) {
   }
 }
 window.loadHomeNOTAMs = loadHomeNOTAMs;
-
-function _truncate(s, max) {
-  const str = String(s || '');
-  return str.length > max ? str.slice(0, max - 1) + '…' : str;
-}

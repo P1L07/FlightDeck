@@ -13,7 +13,11 @@ const AIRPORT_DB_NAME    = 'flightdeck_airports';
 const AIRPORT_DB_VERSION = 1;
 const AIRPORT_STORE      = 'airports';
 const AIRPORT_META_STORE = 'meta';
-const AIRPORT_CSV_URL    = 'https://davidmegginson.github.io/ourairports-data/airports.csv';
+const AIRPORT_CSV_URLS = [
+  'https://cdn.jsdelivr.net/gh/davidmegginson/ourairports-data@main/airports.csv',
+  'https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/airports.csv',
+  'https://davidmegginson.github.io/ourairports-data/airports.csv'
+];
 const AIRPORT_CACHE_DAYS = 30;
 
 let _airportDB = null;
@@ -142,25 +146,58 @@ function _parseCSVLine(line) {
  * Lataa ja parsii CSV
  * ============================================================== */
 async function _downloadAirportsCSV() {
-  console.log('[AirportDB] Ladataan OurAirports-dataa…');
+  let text = null;
+  let lastError = null;
 
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 30000);
+  for (const url of AIRPORT_CSV_URLS) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 45000);
 
-  let resp;
-  try {
-    resp = await fetch(AIRPORT_CSV_URL, { signal: ctrl.signal });
-  } finally {
-    clearTimeout(timeout);
+      let resp;
+      try {
+        resp = await fetch(url, { signal: ctrl.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      if (!resp.ok) {
+        console.warn(`[AirportDB] HTTP ${resp.status} — kokeillaan seuraavaa`);
+        continue;
+      }
+
+      const body = await resp.text();
+
+      // VALIDOI: onko oikeasti CSV? Ensimmäisen 200 merkin perusteella
+      const sample = body.slice(0, 500);
+      if (!sample.includes('ident') || !sample.includes('latitude_deg')) {
+        console.warn(`[AirportDB] Ei CSV:tä (alku: "${sample.slice(0, 80)}…") — kokeillaan seuraavaa`);
+        continue;
+      }
+
+      text = body;
+      break;
+    } catch (e) {
+      lastError = e;
+      console.warn('[AirportDB] Lataus epäonnistui:', url, e.message);
+    }
   }
-   if (!resp.ok) throw new Error(`CSV HTTP ${resp.status}`);
-  let text = await resp.text();
 
-  // Poista BOM-merkki (OurAirports CSV alkaa sillä)
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  if (!text) {
+    throw new Error('Kaikki CSV-URLit epäonnistuivat' + (lastError ? ': ' + lastError.message : ''));
+  }
 
+  // ============ Parsintaa ============
   const lines = text.split('\n');
-  const header = lines[0].split(',');
+  if (lines.length < 100) {
+    throw new Error(`CSV liian lyhyt (${lines.length} riviä)`);
+  }
+
+  // Käsittele BOM ja trimmaa
+  const headerLine = lines[0].replace(/^\uFEFF/, '').trim();
+  const header = headerLine.split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+
+
   const idx = {
     ident:     header.indexOf('ident'),
     type:      header.indexOf('type'),
@@ -171,22 +208,31 @@ async function _downloadAirportsCSV() {
     iata:      header.indexOf('iata_code')
   };
 
+  // Tarkista että kaikki tarvittavat sarakkeet löytyivät
+  if (idx.ident < 0 || idx.lat < 0 || idx.lon < 0) {
+    throw new Error(`Pakolliset sarakkeet puuttuvat. Saadut: ${JSON.stringify(idx)}. Header: ${header.slice(0, 10).join(', ')}`);
+  }
+
   const out = {};
   let skipped = 0;
+  let invalid = 0;
 
   for (let i = 1; i < lines.length; i++) {
-    const cols = _parseCSVLine(lines[i]);
-    if (cols.length < header.length) continue;
+    const line = lines[i];
+    if (!line.trim()) continue;
+
+    const cols = _parseCSVLine(line);
+    if (cols.length < header.length) { invalid++; continue; }
 
     const continent = (cols[idx.continent] || '').toUpperCase();
     if (continent === 'NA' || continent === 'SA') { skipped++; continue; }
 
     const icao = (cols[idx.ident] || '').toUpperCase().trim();
-    if (!icao || icao.length !== 4) continue;
+    if (!icao || icao.length !== 4) { invalid++; continue; }
 
     const lat = parseFloat(cols[idx.lat]);
     const lon = parseFloat(cols[idx.lon]);
-    if (!isFinite(lat) || !isFinite(lon)) continue;
+    if (!isFinite(lat) || !isFinite(lon)) { invalid++; continue; }
 
     out[icao] = {
       icao,
@@ -198,7 +244,10 @@ async function _downloadAirportsCSV() {
     };
   }
 
-  console.log(`[AirportDB] ${Object.keys(out).length} kenttää (ohitettiin ${skipped} Amerikan kenttää)`);
+  if (Object.keys(out).length < 100) {
+    throw new Error(`Liian vähän kenttiä (${Object.keys(out).length}), CSV ei näytä oikealta`);
+  }
+
   return out;
 }
 
@@ -251,14 +300,12 @@ function initAirportDB() {
 
       if (Object.keys(all).length > 100 && ageDays < AIRPORT_CACHE_DAYS) {
         _airportMemCache = all;
-        console.log(`[AirportDB] ${Object.keys(all).length} kenttää muistissa (päivitetty ${Math.round(ageDays)} vrk sitten)`);
         return;
       }
 
       const fresh = await _downloadAirportsCSV();
       await _storeAirports(fresh);
       _airportMemCache = fresh;
-      console.log('[AirportDB] Päivitetty');
     } catch (e) {
       console.warn('[AirportDB] Lataus epäonnistui:', e.message || e);
       if (!_airportMemCache) {
@@ -266,7 +313,6 @@ function initAirportDB() {
           const { all } = await _loadAirportsFromDB();
           if (Object.keys(all).length) {
             _airportMemCache = all;
-            console.log(`[AirportDB] Käytetään vanhaa dataa (${Object.keys(all).length} kenttää)`);
           }
         } catch (_) {}
       }

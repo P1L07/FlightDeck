@@ -192,7 +192,7 @@ function _dbReplaceAllToIDB(list) {
 
 /* ---------------- Julkinen API (synkroninen) ---------------- */
 function dbReadAll() {
-  return _logbookMemory;
+  return _logbookMemory.slice();  // ← matala kopio, turvallinen
 }
 
 function dbGetOne(id) {
@@ -228,8 +228,10 @@ function dbReplaceAllSafe(newList, options = {}) {
   const oldCount = _logbookMemory.length;
   const newCount = Array.isArray(newList) ? newList.length : 0;
 
-  // Jos uusi on paljon pienempi → kysy
-  if (!options.force && oldCount > 10 && newCount < oldCount * 0.5) {
+  // Varoita aina jos menetetään yli puolet (paitsi jos 0 → 0)
+  const isDangerous = oldCount > 0 && newCount < oldCount * 0.5;
+
+  if (!options.force && isDangerous) {
     console.warn(`[DB] ⚠️ Ylikirjoitus: ${oldCount} → ${newCount}`);
     if (!confirm(`Lokikirjassa on ${oldCount} kirjausta, mutta uusi data sisältää vain ${newCount}.\n\nHaluatko varmasti ylikirjoittaa?`)) {
       return false;
@@ -241,10 +243,16 @@ function dbReplaceAllSafe(newList, options = {}) {
 }
 window.dbReplaceAllSafe = dbReplaceAllSafe;
 
-function dbClearAll() {
+function dbClearAll(options = {}) {
+  if (!options.force && _logbookMemory.length > 0) {
+    if (!confirm(`Poistetaanko kaikki ${_logbookMemory.length} kirjausta pysyvästi?`)) {
+      return false;
+    }
+  }
   _logbookMemory = [];
   _dbClearAll().catch(() => {});
   _mirrorToLocalStorage();
+  return true;
 }
 
 /* ---------------- localStorage-peili (migraatiota varten) ---------------- */
@@ -253,16 +261,21 @@ function _mirrorToLocalStorage() {
   clearTimeout(_lsMirrorTimer);
   _lsMirrorTimer = setTimeout(() => {
     try {
-      // Peilaa vain jos mahtuu (~4 MB)
+      // Nopea esitarkistus — 1 kirjaus ≈ 1.5 kB keskimäärin
+      if (_logbookMemory.length > 500) {
+        localStorage.setItem('easa_logbook_v1', '[]');
+        return;
+      }
       const json = JSON.stringify(_logbookMemory);
       if (json.length < 3_500_000) {
         localStorage.setItem('easa_logbook_v1', json);
       } else {
-        // Liian iso → tyhjennä peili ja luota IDB:hen
         localStorage.setItem('easa_logbook_v1', '[]');
         console.warn('[DB] Lokikirja liian iso localStorageen — vain IndexedDB käytössä');
       }
-    } catch (e) {}
+    } catch (e) {
+      try { localStorage.setItem('easa_logbook_v1', '[]'); } catch (e2) {}
+    }
   }, 500);
 }
 
@@ -290,3 +303,16 @@ window.dbDebug = async function () {
                 Math.round(est.quota / 1024 / 1024), 'MB');
   }
 };
+
+window.addEventListener('beforeunload', () => {
+  if (_lsMirrorTimer) {
+    clearTimeout(_lsMirrorTimer);
+    _lsMirrorTimer = null;
+    try {
+      const json = JSON.stringify(_logbookMemory);
+      if (json.length < 3_500_000) {
+        localStorage.setItem('easa_logbook_v1', json);
+      }
+    } catch (e) {}
+  }
+});

@@ -14,6 +14,11 @@ const NOTAM_MAP_ROLE_COLORS = {
   NOTAM: '#8ea0b8'    // harmaa
 };
 
+/* In-flight tracker — estä saman kentän tuplat */
+const _wxPreloadInFlight = new Map();   // icao → Promise
+const _wxPreloadFailed = new Map();     // icao → timestamp (cooldown)
+const _WX_FAIL_COOLDOWN = 5 * 60 * 1000; // 5 min
+
 let _nmWorldCache = null;
 
 async function _nmLoadWorld() {
@@ -244,7 +249,6 @@ async function renderNotamMap(container, airports) {
   }
 
   /* ============ Päivitys: arc mukana ============ */
-  const originalUpdateProjection = updateProjection;
   function isVisible(point) {
     const rot = projection.rotate();
     const center = [-rot[0], -rot[1]];
@@ -540,11 +544,7 @@ async function showAirportNotamModal(airport) {
     const catColor = { VFR: 'var(--success)', MVFR: 'var(--accent)', IFR: 'var(--warning)', LIFR: 'var(--error)' }[fltCat] || 'var(--dim)';
     const fmtWind = (d, s, g) => d == null ? '–'
       : `${String(d).padStart(3, '0')}° / ${Math.round(s)}kt${g ? ' G' + Math.round(g) : ''}`;
-    const fmtVis = (v) => {
-      if (v == null || v === '') return '–';
-      const n = parseFloat(v);
-      return isNaN(n) ? String(v) : (n >= 10 ? '10+ km' : n + ' km');
-    };
+
 
     html += `
       <div class="notam-popup-section">
@@ -555,7 +555,7 @@ async function showAirportNotamModal(airport) {
         </div>
         <div class="notam-popup-grid">
           <div><span>Tuuli</span><b>${fmtWind(liveMetar.wdir, liveMetar.wspd, liveMetar.wgst)}</b></div>
-          <div><span>Näkyvyys</span><b>${fmtVis(liveMetar.visib)}</b></div>
+          <div><span>Näkyvyys</span><b>${typeof _fmtVis === 'function' ? _fmtVis(liveMetar.visib, liveMetar.rawOb) : liveMetar.visib}</b></div>
           <div><span>Lämpötila</span><b>${liveMetar.temp != null ? Math.round(liveMetar.temp) + '°C' : '–'}</b></div>
           <div><span>Kastepiste</span><b>${liveMetar.dewp != null ? Math.round(liveMetar.dewp) + '°C' : '–'}</b></div>
           <div><span>QNH</span><b>${liveMetar.altim != null ? Math.round(liveMetar.altim) + ' hPa' : '–'}</b></div>
@@ -692,19 +692,67 @@ async function _preloadWxForAirports(airports) {
   }
 
   const todo = [];
+  const inFlightWait = [];
+
   airports.forEach(a => {
-  // Ohita FIR/ACC ja legacy — ei METARia
+    const icao = String(a.icao || '').toUpperCase();
+
+    // Ohita FIR/legacy
     if (typeof window.lookupAirport === 'function') {
-      const hit = window.lookupAirport(a.icao);
+      const hit = window.lookupAirport(icao);
       if (hit && (hit.type === 'FIR' || hit.type === 'legacy')) return;
     }
-    const cached = _notamWxGet(a.icao);
-    if (!cached || cached.isStale) todo.push(a.icao);
+
+    // Jos jo käynnissä → odota se loppuun (älä käynnistä tuplana)
+    if (_wxPreloadInFlight.has(icao)) {
+      inFlightWait.push(_wxPreloadInFlight.get(icao));
+      return;
+    }
+
+    // Ohita jos äskettäin epäonnistui (cooldown)
+    const failedAt = _wxPreloadFailed.get(icao);
+    if (failedAt && Date.now() - failedAt < _WX_FAIL_COOLDOWN) return;
+
+    // Ohita jos jo cachessa
+    const cached = _notamWxGet(icao);
+    if (cached && cached.metar && cached.taf) return;
+
+    todo.push(icao);
   });
+
+  // Odota jo käynnissä olevat — jotta tämä kutsu ei palaa ennen kuin data on cachessa
+  if (inFlightWait.length) {
+    await Promise.all(inFlightWait).catch(() => {});
+  }
+
+  if (!todo.length) return;
+
+  await Promise.all(todo.map(async icao => {
+    const p = (async () => {
+      try {
+        const [metar, taf] = await Promise.all([
+          fetchMETAR(icao).catch(() => null),
+          fetchTAF(icao).catch(() => null)
+        ]);
+        if (metar || taf) {
+          _notamWxSet(icao, metar, taf);
+          _wxPreloadFailed.delete(icao);
+          return { icao, ok: true };
+        }
+        _wxPreloadFailed.set(icao, Date.now());
+        return { icao, ok: false };
+      } catch (e) {
+        _wxPreloadFailed.set(icao, Date.now());
+        return { icao, ok: false };
+      } finally {
+        _wxPreloadInFlight.delete(icao);
+      }
+    })();
+    _wxPreloadInFlight.set(icao, p);
+    return p;
+  }));
 }
-
 window._preloadWxForAirports = _preloadWxForAirports;
-
 /* ==============================================================
  * Hae WX cache-ensisijaisesti
  * ============================================================== */

@@ -1,16 +1,29 @@
 /* ==============================================================
- * OFFLINE MODE · Taustatoiminnot ilman UI-elementtejä
+ * OFFLINE MODE · Keskittetty online/offline-orkestrointi
  * ==============================================================
- * Yläpalkin ONLINE/OFFLINE-merkki hoitaa visuaalisen indikoinnin.
- * Tämä moduuli hoitaa:
- *   - safeFetch (estää verkkokutsut offline-tilassa)
- *   - Token-suojaus (ei turhia token-modaleja offline-tilassa)
- *   - Automaattinen datan päivitys kun yhteys palaa
+ * - safeFetch (estää verkkokutsut offline-tilassa)
+ * - Toast-debounce (WiFi flapping ei spammi)
+ * - Online-sync debounce (ei 4× samaa kutsua)
+ * - KESKITETTY: kaikki online-tapahtumat orkestroidaan täällä
+ *   (weather.js ja LogBook.js eivät enää kuuntele 'online')
+ * - EI ylikirjoita getValidSkyplanToken (app.js hoitaa oikein)
  * ============================================================== */
+'use strict';
 
 let _offlineBooted = false;
 
-/* ---------------- Viimeisin synkkaus ---------------- */
+/* Toast-debounce */
+let _lastOfflineToastTime = 0;
+let _lastOnlineToastTime  = 0;
+const TOAST_DEBOUNCE_MS = 5000;
+
+/* Online-sync debounce */
+let _backOnlineTimer = null;
+const BACK_ONLINE_DEBOUNCE_MS = 1500;
+
+/* ==============================================================
+ * Viimeisin synkkaus
+ * ============================================================== */
 function _getLastSyncInfo() {
   try {
     const rangeRaw = localStorage.getItem('assigned_flights_cache_range');
@@ -32,17 +45,26 @@ function _getLastSyncInfo() {
 }
 window.getLastSyncInfo = _getLastSyncInfo;
 
-/* ---------------- Verkkokutsujen esto ---------------- */
+/* ==============================================================
+ * Verkkokutsujen esto
+ * ============================================================== */
 async function safeFetch(url, options) {
   if (!navigator.onLine) {
     console.warn('[Offline] Estetty verkkokutsu (offline):', url);
     return null;
   }
-  return fetch(url, options);
+  try {
+    return await fetch(url, options);
+  } catch (e) {
+    console.warn('[Offline] safeFetch virhe:', e.message);
+    return null;
+  }
 }
 window.safeFetch = safeFetch;
 
-/* ---------------- Token expiry ---------------- */
+/* ==============================================================
+ * Token expiry
+ * ============================================================== */
 function isTokenExpiredOrExpiring() {
   try {
     const token = localStorage.getItem('skyplan_token');
@@ -68,62 +90,119 @@ function isTokenExpiredOrExpiring() {
 }
 window.isTokenExpiredOrExpiring = isTokenExpiredOrExpiring;
 
-/* ---------------- Online-tilan palautuminen ---------------- */
-async function _onBackOnline() {
-  console.log('[Offline] Yhteys palautui — päivitetään data…');
+/* ==============================================================
+ * ONLINE-ORKESTROINTI
+ * ==============================================================
+ * Kaikki 'online'-tapahtuman jälkeiset toiminnot:
+ *
+ *   1. forceRosterSync         — hakee rosterin
+ *        └─ loadAssignedFlights wrapper (LogBook.js)
+ *              └─ scanForCompletedFlights +1500 ms
+ *        └─ forceRosterSync wrapper (LogBook.js)
+ *              └─ autoSyncLogbook +3000 ms
+ *
+ *   2. _initHomeDashboard      — päivittää kotisivun kartan
+ *
+ *   3. scanForCompletedFlights — varmuuskopio (jos wrapper ei lauennut)
+ *
+ * HUOM: forceRosterSync hoitaa suurimman osan. Tämä funktio on
+ * vain orkestroija, ei duplikoi alitoimintoja.
+ * ============================================================== */
+async function _onBackOnline(showToastMsg) {
 
-  if (typeof showToast === 'function') {
-    showToast('Yhteys palautui — päivitetään data.', 'success');
+  if (showToastMsg && typeof showToast === 'function') {
+    showToast('Yhteys palautui', 'success', 3000);
   }
 
   const tasks = [];
 
+  // 1. Roster-sync (triggaa autoSyncLogbook + scanForCompletedFlights wrappereiden kautta)
   if (typeof forceRosterSync === 'function') {
-    tasks.push(forceRosterSync({ silent: true, forceCompare: true }).catch(() => {}));
+    tasks.push(
+      Promise.resolve(forceRosterSync({ silent: true, forceCompare: true }))
+        .catch(err => console.warn('[Offline] forceRosterSync failed:', err?.message))
+    );
+  } else if (typeof loadAssignedFlights === 'function') {
+    // Fallback jos forceRosterSync puuttuu (roster.js ei ladattu)
+    tasks.push(
+      loadAssignedFlights(false, true)
+        .catch(err => console.warn('[Offline] loadAssignedFlights failed:', err?.message))
+    );
   }
 
-  if (typeof renderHomeDashboard === 'function') {
-    tasks.push(Promise.resolve(renderHomeDashboard()).catch(() => {}));
+  // 2. Kotisivun kartta (dedup estää tuplat weather.js:n initin kanssa)
+  if (typeof _initHomeDashboard === 'function') {
+    tasks.push(
+      _initHomeDashboard('back-online')
+        .catch(err => console.warn('[Offline] HomeDashboard failed:', err?.message))
+    );
+  } else if (typeof renderHomeDashboard === 'function') {
+    tasks.push(
+      Promise.resolve(renderHomeDashboard())
+        .catch(err => console.warn('[Offline] HomeDashboard failed:', err?.message))
+    );
   }
 
   await Promise.allSettled(tasks);
 
-  if (typeof showToast === 'function') {
-    showToast('Data päivitetty.', 'success');
+  // 3. Turvaverkko: varmista että päättyneet lennot skannataan
+  //    (yleensä wrapper hoitaa, mutta jos forceRosterSync epäonnistui)
+  if (typeof scanForCompletedFlights === 'function') {
+    setTimeout(() => {
+      scanForCompletedFlights().catch(() => {});
+    }, 2500);
   }
 }
 
-/* ---------------- Eventit ---------------- */
+/* ==============================================================
+ * EVENTIT
+ * ============================================================== */
 window.addEventListener('offline', () => {
-  console.log('[Offline] Yhteys katkesi');
+
+  // Peruuta mahdollinen käynnissä oleva online-sync (flapping)
+  if (_backOnlineTimer) {
+    clearTimeout(_backOnlineTimer);
+    _backOnlineTimer = null;
+  }
+
+  const now = Date.now();
+  if (now - _lastOfflineToastTime < TOAST_DEBOUNCE_MS) return;
+  _lastOfflineToastTime = now;
+
   if (typeof showToast === 'function') {
     showToast('Yhteys katkesi — siirrytty offline-tilaan.', 'warning', 4000);
   }
 });
 
 window.addEventListener('online', () => {
-  console.log('[Offline] Yhteys palautui');
-  setTimeout(_onBackOnline, 500);
+  // Debounce: peruuta edellinen timer jos nopea toggle
+  clearTimeout(_backOnlineTimer);
+  _backOnlineTimer = setTimeout(() => {
+    _backOnlineTimer = null;
+
+    const now = Date.now();
+    const wasJustOffline = (now - _lastOfflineToastTime) < TOAST_DEBOUNCE_MS;
+    const wasJustOnline  = (now - _lastOnlineToastTime)  < TOAST_DEBOUNCE_MS;
+
+    // Jos ollut äskettäin offline/online → älä näytä toastia (flapping)
+    const showToastMsg = !wasJustOffline && !wasJustOnline;
+
+    if (showToastMsg) {
+      _lastOnlineToastTime = now;
+    }
+
+    _onBackOnline(showToastMsg).catch(err => {
+      console.warn('[Offline] _onBackOnline failed:', err);
+    });
+  }, BACK_ONLINE_DEBOUNCE_MS);
 });
 
-/* ---------------- Boot ---------------- */
+/* ==============================================================
+ * BOOT
+ * ============================================================== */
 function _offlineBoot() {
   if (_offlineBooted) return;
   _offlineBooted = true;
-
-  console.log('[Offline] Moduuli valmis');
-
-  // Wrap getValidSkyplanToken → offline-suojaus
-  if (typeof window.getValidSkyplanToken === 'function') {
-    const orig = window.getValidSkyplanToken;
-    window.getValidSkyplanToken = async function (...args) {
-      if (!navigator.onLine) {
-        console.log('[Token] Offline — palautetaan null ilman token-modalia');
-        return null;
-      }
-      return orig.apply(this, args);
-    };
-  }
 }
 
 if (document.readyState === 'loading') {

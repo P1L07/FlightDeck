@@ -4,10 +4,8 @@
  * - Vertikaalisesti scrollattava 7 päivän näkymä
  * - Jokainen päivä omana korttinaan (lennot / vapaapäivä)
  * - Viikkonavigaatio: ← → Tänään
- * - Vaihto taulukkonäkymään samassa tabissa
  * ============================================================== */
 
-const WV_VIEW_KEY = 'flights_view_v1';
 const WV_DAY_NAMES = ['SU','MA','TI','KE','TO','PE','LA'];
 const WV_MONTHS_FI = ['tammi','helmi','maalis','huhti','touko','kesä',
                      'heinä','elo','syys','loka','marras','joulu'];
@@ -189,8 +187,10 @@ function renderWeekView(anchorDate) {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + i);
     const ymd = _wvYMD(d);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const isToday = ymd === todayYMD;
-    const isPast  = d < new Date() && !isToday;
+    const isPast  = d.getTime() < today.getTime();  // ei tarvitse !isToday
     const flights = byDay[ymd];
     const dayMins = flights.reduce((s, f) => s + _wvFlightMins(f), 0);
 
@@ -249,15 +249,17 @@ function _wvRenderFlightCard(f) {
   const blockMins = _wvFlightMins(f);
   const blockStr  = _wvFmtMins(blockMins);
 
-  // Finalization-tila (vain väriä varten kortissa)
+    // Finalization-tila — pelkkä localStorage-lippu
   let isFinalized = false;
   try {
-    if (typeof isFlightFinalized === 'function') {
-      const cachedOFPs = (typeof getCachedOFPs === 'function') ? [] : [];
-      isFinalized = !!isFlightFinalized(f, cachedOFPs);
-    }
-    if (!isFinalized && flightId) {
+    if (flightId) {
       isFinalized = localStorage.getItem(`skyplan_finalized_${flightId}`) === 'true';
+    }
+    // Fallback: jos isFlightFinalized on sync ja toimii ilman OFP-dataa
+    if (!isFinalized && typeof isFlightFinalized === 'function') {
+      try {
+        isFinalized = !!isFlightFinalized(f, []);
+      } catch (e) {}
     }
   } catch (e) {}
 
@@ -310,27 +312,6 @@ function _wvRenderFlightCard(f) {
 
 let _wvSyncInFlight = false;
 
-/* Näytä latausindikaattori viikkonäkymän sisällä */
-function _wvShowLoading(anchor) {
-  const container = document.getElementById('week-view-container');
-  if (!container) return;
-  const weekStart = _wvWeekStart(anchor);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 6);
-  container.innerHTML = `
-    <div style="display:flex; flex-direction:column; align-items:center;
-                justify-content:center; padding:60px 20px; gap:14px;
-                background:var(--panel); border:1px solid var(--border);
-                border-radius:var(--radius);">
-      <div class="loader-spinner"><span></span><span></span><span></span></div>
-      <div style="font-size:14px; font-weight:600; color:var(--text);">
-        Haetaan viikkoa ${_wvISOWeek(weekStart)}…
-      </div>
-      <div style="font-size:12px; color:var(--dim); font-family:var(--font-mono);">
-        ${_wvFmtDateRange(weekStart, weekEnd)}
-      </div>
-    </div>`;
-}
 
 async function _wvSyncAndRender(anchor) {
   if (_wvSyncInFlight) return;
@@ -413,44 +394,8 @@ window.weekViewNext  = weekViewNext;
 window.weekViewToday = weekViewToday;
 
 /* ==============================================================
- * Näkymän vaihto
- * ============================================================== */
-function setFlightsView(view) {
-  const tableEl      = document.getElementById('assigned-flights-container');
-  const weekEl       = document.getElementById('week-view-container');
-  const toolbarTable = document.getElementById('toolbar-table');
-  const toolbarWeek  = document.getElementById('toolbar-week');
-  const toggleBtns   = document.querySelectorAll('#flights-view-toggle .vt-btn');
-
-  if (!tableEl || !weekEl) return;
-
-  if (view === 'week') {
-    tableEl.style.display = 'none';
-    weekEl.style.display = '';
-    if (toolbarTable) toolbarTable.style.display = 'none';
-    if (toolbarWeek)  toolbarWeek.style.display  = '';
-    renderWeekView();
-  } else {
-    tableEl.style.display = '';
-    weekEl.style.display = 'none';
-    if (toolbarTable) toolbarTable.style.display = '';
-    if (toolbarWeek)  toolbarWeek.style.display  = 'none';
-  }
-
-  toggleBtns.forEach(b => b.classList.toggle('active', b.dataset.view === view));
-
-  try { localStorage.setItem(WV_VIEW_KEY, view); } catch (e) {}
-}
-window.setFlightsView = setFlightsView;
-
-/* ==============================================================
  * Init
  * ============================================================== */
-function _wvRestoreView() {
-  let saved = 'table';
-  try { saved = localStorage.getItem(WV_VIEW_KEY) || 'table'; } catch (e) {}
-  if (saved === 'week') setFlightsView('week');
-}
 
 function _wvSyncCaptainName() {
   const src = document.getElementById('user-name');
@@ -475,47 +420,92 @@ function _wvSyncCaptainName() {
 /* ==============================================================
  * Wrap loadAssignedFlights → tallenna haetun aikavälin range
  * ==============================================================
- * Tämä mahdollistaa _wvCacheCoversRange-tarkistuksen: jos sama
- * aikaväli on jo haettu, ei haeta turhaan uudelleen.
+ * - Range laajenee (ei ylikirjoita pienemmällä)
+ * - 30 vrk vanheneminen: vanha range nollataan
+ * - Defensiivinen: jos loadAssignedFlights määritellään myöhemmin,
+ *   wrap asennetaan property-setterillä
  * ============================================================== */
 (function _wvWrapLoadRange() {
-  if (typeof window.loadAssignedFlights !== 'function') return;
-  const orig = window.loadAssignedFlights;
-  window.loadAssignedFlights = async function (...args) {
-    const result = await orig.apply(this, args);
 
-    // Tallenna haettu aikaväli
-    try {
-      const fromInput = document.getElementById('assigned-date-from');
-      const toInput   = document.getElementById('assigned-date-to');
-      if (fromInput?.value && toInput?.value) {
-        localStorage.setItem('assigned_flights_cache_range', JSON.stringify({
-          from: fromInput.value,
-          to:   toInput.value,
-          at:   new Date().toISOString()
-        }));
+  function _applyWrap(origFn) {
+    return async function (...args) {
+      const result = await origFn.apply(this, args);
+
+      try {
+        const fromInput = document.getElementById('assigned-date-from');
+        const toInput   = document.getElementById('assigned-date-to');
+        const newFrom = fromInput?.value;
+        const newTo   = toInput?.value;
+        if (!newFrom || !newTo) return result;
+
+        const RANGE_TTL_DAYS = 30;
+        let existing = {};
+        try {
+          existing = JSON.parse(localStorage.getItem('assigned_flights_cache_range') || '{}');
+        } catch (e) {}
+
+        // Onko vanha range vanhentunut?
+        const ageDays = existing.at
+          ? (Date.now() - new Date(existing.at).getTime()) / 86400000
+          : Infinity;
+        const isExpired = ageDays > RANGE_TTL_DAYS;
+
+        let merged;
+        if (isExpired || !existing.from || !existing.to) {
+          // Ensimmäinen haku tai vanhentunut → aseta sellaisenaan
+          merged = { from: newFrom, to: newTo, at: new Date().toISOString() };
+        } else {
+          // Laajenna — älä koskaan kutista
+          merged = {
+            from: existing.from < newFrom ? existing.from : newFrom,
+            to:   existing.to   > newTo   ? existing.to   : newTo,
+            at:   new Date().toISOString()
+          };
+        }
+
+        localStorage.setItem('assigned_flights_cache_range', JSON.stringify(merged));
+      } catch (e) {
+        // Ei kriittinen — range on vain optimointi
       }
-    } catch (e) {}
 
-    return result;
-  };
+      return result;
+    };
+  }
+
+  // Tapaus 1: loadAssignedFlights on jo olemassa
+  if (typeof window.loadAssignedFlights === 'function') {
+    window.loadAssignedFlights = _applyWrap(window.loadAssignedFlights);
+    return;
+  }
+
+  // Tapaus 2: määritellään myöhemmin → intercept
+  let _impl = undefined;
+  Object.defineProperty(window, 'loadAssignedFlights', {
+    configurable: true,
+    get() { return _impl; },
+    set(fn) {
+      if (typeof fn !== 'function') {
+        _impl = fn;
+        return;
+      }
+      _impl = _applyWrap(fn);
+    }
+  });
 })();
 
 /* Boot */
 function _wvBoot() {
-  _wvSyncCaptainName();
-  _wvRestoreView();
+  // Renderöi viikkonäkymä heti (cachesta)
+  renderWeekView();
 
-  // Jos viikkonäkymä on auki, kuuntele kun data päivittyy cacheen
+  // Kuuntele kun roster-cache päivittyy — päivitä näkymä
   window.addEventListener('storage', (ev) => {
     if (ev.key === 'assigned_flights_cache') {
-      const weekActive = document.querySelector(
-        '#flights-view-toggle .vt-btn[data-view="week"].active'
-      );
-      if (weekActive) renderWeekView();
+      renderWeekView();
     }
   });
 }
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', _wvBoot);
 } else {
