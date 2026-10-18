@@ -63,7 +63,6 @@ function _bfFlightLabel(f) {
   const date = String(f.StdLt || f.Std || '').split('T')[0];
   const time = _bfTime(f.StdLt || f.Std);
 
-  // Merkitse onko mennyt / tänään / tuleva
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const flightDay = new Date(f.StdLt || f.Std || 0);
@@ -93,15 +92,15 @@ function _bfGetRoster() {
 function _bfGetUpcomingFlights() {
   const now = Date.now();
   const roster = _bfGetRoster();
-  const LOOKBACK_MS  = 7 * 24 * 60 * 60 * 1000;    // 7 pv taakse (oli 30)
-  const LOOKAHEAD_MS = 30 * 24 * 60 * 60 * 1000;   // 30 pv eteenpäin (oli 60)
+  const LOOKBACK_MS  = 7 * 24 * 60 * 60 * 1000;    // 7 pv taakse
+  const LOOKAHEAD_MS = 30 * 24 * 60 * 60 * 1000;   // 30 pv eteenpäin
 
   return roster
     .filter(f => {
       const std = new Date(f.StdLt || f.Std || 0).getTime();
       const sta = new Date(f.StaLt || f.Sta || 0).getTime();
       if (!std || !sta) return false;
-      return sta > now - LOOKBACK_MS && std < now + LOOKAHEAD_MS;
+      return sta > (now - LOOKBACK_MS) && std < (now + LOOKAHEAD_MS);
     })
     .sort((a, b) => {
       const ta = new Date(a.StdLt || a.Std || 0).getTime();
@@ -113,16 +112,13 @@ function _bfGetUpcomingFlights() {
 function _bfGetSelectedFlight() {
   const roster = _bfGetUpcomingFlights();
   if (!roster.length) return null;
-
   const now = Date.now();
 
   // 1) Tallennettu valinta
   let savedId = null;
   try { savedId = localStorage.getItem(BRIEFING_FLIGHT_KEY); } catch (e) {}
   if (savedId) {
-    const found = roster.find(f =>
-      String(f.ID || f.id || f.FlightID) === String(savedId)
-    );
+    const found = roster.find(f => String(f.ID || f.id || f.FlightID) === String(savedId));
     if (found) return found;
   }
 
@@ -130,17 +126,15 @@ function _bfGetSelectedFlight() {
   const current = roster.find(f => {
     const std = new Date(f.StdLt || f.Std || 0).getTime();
     const sta = new Date(f.StaLt || f.Sta || 0).getTime();
-    return now >= std - 30 * 60 * 1000 && now <= sta + 30 * 60 * 1000;
+    return now >= (std - 30 * 60 * 1000) && now <= (sta + 30 * 60 * 1000);
   });
   if (current) return current;
 
   // 3) Seuraava tuleva
-  const next = roster.find(f =>
-    new Date(f.StdLt || f.Std || 0).getTime() > now
-  );
+  const next = roster.find(f => new Date(f.StdLt || f.Std || 0).getTime() > now);
   if (next) return next;
 
-  // 4) Muuten viimeisin mennyt (Trip Info -täyttöä varten)
+  // 4) Muuten viimeisin mennyt
   return roster[roster.length - 1];
 }
 
@@ -150,37 +144,27 @@ function _bfSetSelectedFlight(id) {
     // Synkkaa kotiin — pinned flight
     localStorage.setItem('home_pinned_flight_id', String(id));
     localStorage.setItem('home_pinned_flight_at', new Date().toISOString());
-    console.log('[Briefing] Valittu lento synkattu kotiin:', id);
   } catch (e) {}
 }
 
 /* ==============================================================
- * RENDER GENERATION · estä vanhentuneiden latauksien kirjoitukset
- * ==============================================================
- * Joka renderBriefing-kutsu kasvattaa laskuria. Async-lataukset
- * tarkistavat laskurin ennen kuin kirjoittavat DOMiin — jos
- * käyttäjä on vaihtanut lentoa, vanha lataus heitetään pois.
+ * RENDER GENERATION
  * ============================================================== */
 let _bfRenderGen = 0;
+
 async function renderBriefing() {
   const container = document.getElementById('briefing-container');
   if (!container) return;
 
   const myGen = ++_bfRenderGen;
-
   const upcoming = _bfGetUpcomingFlights();
+  
   if (!upcoming.length) {
     container.innerHTML = `
-      <div style="padding:40px 22px; text-align:center;
-                  background:var(--panel); border:1px solid var(--border);
-                  border-radius:var(--radius);">
+      <div style="padding:40px 22px; text-align:center; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);">
         <div style="font-size:34px; margin-bottom:10px;">✈</div>
-        <div style="font-size:15px; font-weight:700; color:var(--text);">
-          Ei tulevia lentoja
-        </div>
-        <div style="font-size:12px; color:var(--dim); margin-top:6px;">
-          Synkkaa roster tai valitse mennyt lento Lennot-välilehdeltä.
-        </div>
+        <div style="font-size:15px; font-weight:700; color:var(--text);">Ei tulevia lentoja</div>
+        <div style="font-size:12px; color:var(--dim); margin-top:6px;">Synkkaa roster tai valitse mennyt lento Lennot-välilehdeltä.</div>
       </div>`;
     return;
   }
@@ -198,7 +182,7 @@ async function renderBriefing() {
   const sta = _bfTime(f.StaLt || f.Sta);
   const date = _bfDate(f.StdLt || f.Std);
   const reg = String(f.RegistrationNumber || f.AircraftDescription || 'TBA').trim();
-  // Hae journey-log lentoaikaa varten (cache-ensin)
+  
   let _bfLog = null;
   if (typeof getCachedJourneyLog === 'function') {
     _bfLog = getCachedJourneyLog(flightId);
@@ -209,7 +193,6 @@ async function renderBriefing() {
   const blockMins  = _bfFlightMins(f);
   const blockStr   = _bfFmtMins(blockMins);
 
-  // Dropdown valintaan
   const dropdownOptions = upcoming.map(x => {
     const xid = String(x.ID || x.id || x.FlightID || '');
     const label = _bfFlightLabel(x);
@@ -217,10 +200,15 @@ async function renderBriefing() {
     return `<option value="${_bfEsc(xid)}"${selected}>${_bfEsc(label)}</option>`;
   }).join('');
 
-  // Onko jo lokikirjassa?
-  const logbookEntry = (typeof getLogbookEntryByFlightId === 'function')
-    ? getLogbookEntryByFlightId(flightId)
-    : null;
+  const logbookEntry = (typeof getLogbookEntryByFlightId === 'function') ? getLogbookEntryByFlightId(flightId) : null;
+  let standHtml = '';
+  
+  if (typeof extractStandNumber === 'function') {
+    const stand = extractStandNumber(f, null);
+    if (stand) {
+      standHtml = `<span class="bf-head-sep">·</span><span class="bf-head-stand">STAND <b>${_bfEsc(stand.value)}</b></span>`;
+    }
+  }
 
   container.innerHTML = `
     <div class="bf-head">
@@ -233,15 +221,7 @@ async function renderBriefing() {
         <span class="bf-head-flt">${_bfEsc(flightNum)}</span>
         <span class="bf-head-sep">·</span>
         <span class="bf-head-date">${_bfEsc(date)}</span>
-        ${(() => {
-          const stand = (typeof extractStandNumber === 'function')
-            ? extractStandNumber(f, null)
-            : null;
-          return stand ? `
-            <span class="bf-head-sep">·</span>
-            <span class="bf-head-stand">STAND <b>${_bfEsc(stand.value)}</b></span>
-          ` : '';
-        })()}
+        ${standHtml}
       </div>
       <div class="bf-head-times">
         <div><span class="bf-label">STD</span><span class="bf-value">${std}</span></div>
@@ -253,35 +233,24 @@ async function renderBriefing() {
         <select id="bf-flight-select" class="bf-select" onchange="onBriefingFlightChange(this.value)">
           ${dropdownOptions}
         </select>
-        ${logbookEntry ? `
-          <span class="bf-chip bf-chip-logged">✔ Lokikirjassa</span>
-        ` : ''}
+        ${logbookEntry ? `<span class="bf-chip bf-chip-logged">✔ Lokikirjassa</span>` : ''}
       </div>
     </div>
 
     <div class="bf-grid">
       <div class="card">
         <div class="card-label">SÄÄ · LÄHTÖ · ${_bfEsc(dep)}</div>
-        <div class="weather-widget" id="bf-wx-dep">
-          <div class="empty">Ladataan…</div>
-        </div>
+        <div class="weather-widget" id="bf-wx-dep"><div class="empty">Ladataan…</div></div>
       </div>
       <div class="card">
         <div class="card-label">SÄÄ · SAAPUMINEN · ${_bfEsc(arr)}</div>
-        <div class="weather-widget" id="bf-wx-arr">
-          <div class="empty">Ladataan…</div>
-        </div>
+        <div class="weather-widget" id="bf-wx-arr"><div class="empty">Ladataan…</div></div>
       </div>
     </div>
 
     <div class="card" style="padding:14px 16px;">
-      <div id="bf-notam-map" style="width:100%; height:280px; border-radius:12px;
-          background:radial-gradient(ellipse at center, rgba(0,30,60,0.4) 0%, transparent 70%);
-          overflow:hidden; position:relative; touch-action:none;">
-        <div style="height:100%; display:flex; align-items:center; justify-content:center;
-                    color:var(--dim); font-size:12px;">
-          Ladataan..
-        </div>
+      <div id="bf-notam-map" style="width:100%; height:280px; border-radius:12px; background:radial-gradient(ellipse at center, rgba(0,30,60,0.4) 0%, transparent 70%); overflow:hidden; position:relative; touch-action:none;">
+        <div style="height:100%; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:12px;">Ladataan..</div>
       </div>
     </div>
 
@@ -306,26 +275,21 @@ async function renderBriefing() {
 
     <div class="card">
       <div class="card-label">MIEHISTÖ</div>
-      <div id="bf-crew">
-        <div class="empty">Ladataan…</div>
-      </div>
+      <div id="bf-crew"><div class="empty">Ladataan…</div></div>
     </div>
   `;
 
   _bfLoadWeather(dep, arr, myGen);
   _bfLoadCrew(flightId, myGen);
+  
   if (typeof renderDefectsCardContent === 'function') {
     renderDefectsCardContent('bf-defects', reg).catch(() => {});
   }
-  // Lataa Trip Info
   if (typeof renderTripInfoCard === 'function') {
     renderTripInfoCard('bf-tripinfo', f).catch(() => {});
   }
-  // NOTAM-kartta
   if (typeof _bfLoadNotamMap === 'function') {
-    _bfLoadNotamMap(f, flightId).catch(err => {
-      console.warn('[Briefing] NOTAM-map epäonnistui:', err);
-    });
+    _bfLoadNotamMap(f, flightId).catch(() => {});
   }
 }
 window.renderBriefing = renderBriefing;
@@ -335,6 +299,11 @@ function onBriefingFlightChange(id) {
   if (!id) return;
   _bfSetSelectedFlight(id);
   renderBriefing();
+  
+  // Päivitetään kotisivu välittömästi, jotta valinta synkronoituu Dashboardille
+  if (typeof renderHomeDashboard === 'function') {
+    renderHomeDashboard().catch(() => {});
+  }
 }
 window.onBriefingFlightChange = onBriefingFlightChange;
 
@@ -364,7 +333,6 @@ async function _bfLoadWeather(depIcao, arrIcao, gen = null) {
         return;
       }
 
-      // ← LISÄÄ TÄMÄ: älä kirjoita jos käyttäjä on vaihtanut lentoa
       if (gen != null && gen !== _bfRenderGen) return;
       if (!el.isConnected) return;
 
@@ -374,7 +342,6 @@ async function _bfLoadWeather(depIcao, arrIcao, gen = null) {
         el.innerHTML = '<div class="empty">Sää-widget puuttuu</div>';
       }
     } catch (e) {
-      console.warn('[Briefing] WX failed:', e);
       if (gen != null && gen !== _bfRenderGen) return;
       if (!el.isConnected) return;
       if (el) el.innerHTML = '<div class="empty">Sään haku epäonnistui</div>';
@@ -385,21 +352,8 @@ async function _bfLoadWeather(depIcao, arrIcao, gen = null) {
 }
 
 /* ---------------- Miehistö ---------------- */
-/* ==============================================================
- * Miehistö · cache-first + in-flight dedup + race-safe
- * ==============================================================
- * Optimointi:
- *   1. Lokikirja ensin (synkroninen, ei verkkopyyntöä)
- *   2. Cache-first: jos journey-log löytyy ja sisältää miehistön → näytä heti
- *   3. In-flight dedup: vain yksi verkkopyyntö per flightId samanaikaisesti
- *   4. 422-cooldown: "ei julkaistu" -tapauksessa ei yritetä uudelleen 15 min
- *   5. Generation check: vanha lataus ei kirjoita uuteen DOMiin
- *   6. isConnected check: ei kirjoita irrotettuun elementtiin
- *   7. Error differentiation: 422 = selkokielinen, muu = tekninen
- *   8. Stable sort: alkuperäinen järjestys säilyy saman roolin sisällä
- * ============================================================== */
-const _bfCrewInFlight   = new Map();   // flightId → Promise
-const _bfCrewFailed422  = new Map();   // flightId → timestamp
+const _bfCrewInFlight   = new Map();
+const _bfCrewFailed422  = new Map();
 const CREW_422_COOLDOWN = 15 * 60 * 1000;   // 15 min
 
 async function _bfLoadCrew(flightId, gen = null) {
@@ -411,36 +365,22 @@ async function _bfLoadCrew(flightId, gen = null) {
     return;
   }
 
-  /* --- Apurit --- */
-  const isStale = () => {
-    if (gen != null && gen !== _bfRenderGen) return true;
-    if (!el.isConnected) return true;
-    return false;
-  };
+  const isStale = () => (gen != null && gen !== _bfRenderGen) || !el.isConnected;
 
   const renderCrew = (log) => {
     if (isStale()) return;
 
     if (!log?.crewDuty?.length) {
-      el.innerHTML = `
-        <div class="empty">
-          Miehistöä ei ole vielä julkaistu.
-        </div>`;
+      el.innerHTML = `<div class="empty">Miehistöä ei ole vielä julkaistu.</div>`;
       return;
     }
 
-    const ROLE_ORDER = {
-      PIC: 1, CP: 1, CAPT: 1, P1: 1,
-      FO: 2, SIC: 2, SO: 2, P2: 2,
-      IS: 3, IFS: 3, PUR: 3, PURSER: 3, SCC: 3, SCCM: 3, CSD: 3,
-      FY: 4, CABIN: 4, FA: 4, CC: 4
-    };
+    const ROLE_ORDER = { PIC: 1, CP: 1, CAPT: 1, P1: 1, FO: 2, SIC: 2, SO: 2, P2: 2, IS: 3, IFS: 3, PUR: 3, PURSER: 3, SCC: 3, SCCM: 3, CSD: 3, FY: 4, CABIN: 4, FA: 4, CC: 4 };
 
     const rows = log.crewDuty
       .map((c, i) => {
         const pos = String(c.position || '').toUpperCase().trim();
-        const name = [c.firstName, c.lastName].filter(Boolean).join(' ')
-                  || c.employeeId || '–';
+        const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.employeeId || '–';
 
         let label = pos || '?';
         if (['CP','CAPT','PIC','P1'].includes(pos)) label = 'PIC';
@@ -450,9 +390,7 @@ async function _bfLoadCrew(flightId, gen = null) {
 
         const order = ROLE_ORDER[pos] || 9;
         const staffId = String(c.staffId || '');
-        const isFav = staffId
-          && (typeof isFavoriteCrew === 'function')
-          && isFavoriteCrew(staffId);
+        const isFav = staffId && (typeof isFavoriteCrew === 'function') && isFavoriteCrew(staffId);
 
         return {
           name, label, order, staffId, isFav,
@@ -468,10 +406,7 @@ async function _bfLoadCrew(flightId, gen = null) {
           <span class="bf-crew-role">${_bfEsc(c.label)}</span>
           <span class="bf-crew-name">${_bfEsc(c.name)}</span>
           ${c.staffId ? `
-            <button class="crew-fav-btn ${c.isFav ? 'is-fav' : ''}"
-                    data-fav-staff="${c.staffId}"
-                    onclick="toggleFavoriteFromBtn(this, '${c.staffId}', '${c.safeFirst}', '${c.safeLast}', '${c.safePos}')"
-                    title="${c.isFav ? 'Poista suosikeista' : 'Lisää suosikiksi'}">
+            <button class="crew-fav-btn ${c.isFav ? 'is-fav' : ''}" data-fav-staff="${c.staffId}" onclick="toggleFavoriteFromBtn(this, '${c.staffId}', '${c.safeFirst}', '${c.safeLast}', '${c.safePos}')" title="${c.isFav ? 'Poista suosikeista' : 'Lisää suosikiksi'}">
               ${c.isFav ? '★' : '☆'}
             </button>
           ` : ''}
@@ -480,95 +415,51 @@ async function _bfLoadCrew(flightId, gen = null) {
 
     el.innerHTML = `
       <div class="bf-crew-list">${rows}</div>
-      <div style="font-size:11px; color:var(--dim); margin-top:10px;">
-        ${log.crewDuty.length} miehistön jäsentä · Lähde: Skyplan journey-log
-      </div>`;
+      <div style="font-size:11px; color:var(--dim); margin-top:10px;">${log.crewDuty.length} miehistön jäsentä · Lähde: Skyplan journey-log</div>`;
   };
 
   const renderError = (err) => {
     if (isStale()) return;
-
     const msg = String(err?.message || '');
-    const isNotPublished = msg.includes('422')
-      || msg.includes('not available')
-      || msg.includes('not been completed')
-      || msg.includes('not yet')
-      || msg.includes('Journey log');
+    const isNotPublished = msg.includes('422') || msg.includes('not available') || msg.includes('not been completed') || msg.includes('not yet') || msg.includes('Journey log');
 
     if (isNotPublished) {
-      el.innerHTML = `
-        <div class="empty">
-          Miehistöä ei ole vielä julkaistu.
-          <div style="font-size:11px; color:var(--faint); margin-top:6px;">
-            Dispatch julkaisee miehistön yleensä 24 h ennen lähtöä.
-          </div>
-        </div>`;
+      el.innerHTML = `<div class="empty">Miehistöä ei ole vielä julkaistu.<div style="font-size:11px; color:var(--faint); margin-top:6px;">Dispatch julkaisee miehistön yleensä 24 h ennen lähtöä.</div></div>`;
     } else {
-      console.warn('[Briefing] Crew failed:', err);
-      el.innerHTML = `
-        <div class="empty">
-          Miehistön haku epäonnistui.
-          <div style="font-size:11px; color:var(--faint); margin-top:6px;">
-            ${_bfEsc(msg)}
-          </div>
-        </div>`;
+      el.innerHTML = `<div class="empty">Miehistön haku epäonnistui.<div style="font-size:11px; color:var(--faint); margin-top:6px;">${_bfEsc(msg)}</div></div>`;
     }
   };
 
   const showLoader = () => {
     if (isStale()) return;
-    el.innerHTML = `
-      <div style="display:flex; align-items:center; gap:10px; padding:10px 0;">
-        <div class="loader-spinner" style="transform:scale(0.7);"><span></span><span></span><span></span></div>
-        <span style="font-size:12px; color:var(--dim);">Ladataan miehistöä…</span>
-      </div>`;
+    el.innerHTML = `<div style="display:flex; align-items:center; gap:10px; padding:10px 0;"><div class="loader-spinner" style="transform:scale(0.7);"><span></span><span></span><span></span></div><span style="font-size:12px; color:var(--dim);">Ladataan miehistöä…</span></div>`;
   };
 
-  /* --- 1. Lokikirja (synkroninen) --- */
-  const entry = (typeof getLogbookEntryByFlightId === 'function')
-    ? getLogbookEntryByFlightId(flightId)
-    : null;
-
+  const entry = (typeof getLogbookEntryByFlightId === 'function') ? getLogbookEntryByFlightId(flightId) : null;
   if (entry && entry.picName) {
     if (isStale()) return;
-    el.innerHTML = `
-      <div class="bf-crew-list">
-        <div class="bf-crew-item">
-          <span class="bf-crew-role">PIC</span>
-          <span class="bf-crew-name">${_bfEsc(entry.picName)}</span>
-        </div>
-      </div>
-      <div style="font-size:11px; color:var(--dim); margin-top:10px;">
-        Lähde: lokikirja
-      </div>`;
+    el.innerHTML = `<div class="bf-crew-list"><div class="bf-crew-item"><span class="bf-crew-role">PIC</span><span class="bf-crew-name">${_bfEsc(entry.picName)}</span></div></div><div style="font-size:11px; color:var(--dim); margin-top:10px;">Lähde: lokikirja</div>`;
     return;
   }
 
-  /* --- 2. Tarkista funktio --- */
   if (typeof fetchJourneyLog !== 'function') {
     if (isStale()) return;
     el.innerHTML = '<div class="empty">Journey-log-palvelu ei ole ladattu</div>';
     return;
   }
 
-  /* --- 3. Cache-first: onko jo miehistö? --- */
-  const cachedLog = (typeof getCachedJourneyLog === 'function')
-    ? getCachedJourneyLog(flightId)
-    : null;
-
+  const cachedLog = (typeof getCachedJourneyLog === 'function') ? getCachedJourneyLog(flightId) : null;
   if (cachedLog?.crewDuty?.length) {
     renderCrew(cachedLog);
     return;
   }
 
-  /* --- 4. 422-cooldown: älä yritä turhaan uudelleen --- */
   const failedAt = _bfCrewFailed422.get(flightId);
   if (failedAt && (Date.now() - failedAt) < CREW_422_COOLDOWN) {
     renderError({ message: 'Journey log not available yet' });
     return;
   }
 
-  /* --- 5. In-flight dedup --- */
   if (_bfCrewInFlight.has(flightId)) {
     showLoader();
     try {
@@ -580,13 +471,10 @@ async function _bfLoadCrew(flightId, gen = null) {
     return;
   }
 
-  /* --- 6. Hae verkosta --- */
   showLoader();
 
   const p = (async () => {
-    const token = (typeof getValidSkyplanToken === 'function')
-      ? await getValidSkyplanToken().catch(() => null)
-      : null;
+    const token = (typeof getValidSkyplanToken === 'function') ? await getValidSkyplanToken().catch(() => null) : null;
     const log = await fetchJourneyLog(flightId, token);
     if (typeof _cacheJourneyLog === 'function') {
       try { _cacheJourneyLog(flightId, log); } catch (e) {}
@@ -601,10 +489,7 @@ async function _bfLoadCrew(flightId, gen = null) {
     renderCrew(log);
   } catch (e) {
     const msg = String(e?.message || '');
-    if (msg.includes('422')
-        || msg.includes('not available')
-        || msg.includes('not been completed')
-        || msg.includes('not yet')) {
+    if (msg.includes('422') || msg.includes('not available') || msg.includes('not been completed') || msg.includes('not yet')) {
       _bfCrewFailed422.set(flightId, Date.now());
     }
     renderError(e);
@@ -630,10 +515,8 @@ function openBriefingOFP() {
     return;
   }
 
-  // Tarkista OFP-saatavuus etukäteen
   (async () => {
     try {
-      // Nopea HEAD-tyylinen tarkistus v2-endpointilla
       if (typeof getValidSkyplanToken !== 'function') {
         previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
         return;
@@ -644,31 +527,19 @@ function openBriefingOFP() {
         return;
       }
 
-      const v2Resp = await fetch(
-        `https://kcskyplanapi.airastana.com/api/v2/flights/${flightId}/ofp`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      ).catch(() => null);
+      const v2Resp = await fetch(`https://kcskyplanapi.airastana.com/api/v2/flights/${flightId}/ofp`, { headers: { 'Authorization': `Bearer ${token}` } }).catch(() => null);
 
       if (v2Resp && v2Resp.status === 422) {
         if (typeof createModal === 'function') {
-          createModal({
-            title: 'OFP ei vielä saatavilla',
-            icon: '✈',
-            type: 'info',
-            message: 'Lennon OFP:tä ei ole vielä generoitu. Dispatch julkaisee sen yleensä 12–24 h ennen lähtöä.',
-            confirmText: 'OK',
-            compact: true
-          });
+          createModal({ title: 'OFP ei vielä saatavilla', icon: '✈', type: 'info', message: 'Lennon OFP:tä ei ole vielä generoitu. Dispatch julkaisee sen yleensä 12–24 h ennen lähtöä.', confirmText: 'OK', compact: true });
         } else if (typeof showToast === 'function') {
           showToast('OFP ei vielä saatavilla — yritä myöhemmin.', 'info', 4000);
         }
         return;
       }
 
-      // OFP saatavilla → avaa preview
       previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
     } catch (e) {
-      // Fallback: avaa preview suoraan
       previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
     }
   })();
@@ -698,31 +569,23 @@ async function importBriefingToLogbook() {
     aircraftModel: f.AircraftDescription
   });
 
-  // Päivitä näkymä
   renderBriefing();
 }
 window.importBriefingToLogbook = importBriefingToLogbook;
 
-
 /* ==============================================================
  * Flight time (lentoaika) — takeoff → touchdown
- * ==============================================================
- * 1. Journey-log: todellinen FlightTime (lennon jälkeen)
- * 2. Roster: ETA - ETD (arvio ennen lentoa)
- * 3. Fallback: null (näytetään "–")
  * ============================================================== */
 function _bfFlightTimeMins(f, log) {
-  // 1. Journey-log FlightTime ("01:35:00" → 95 min)
   if (log?.flightTime) {
     const parts = String(log.flightTime).split(':');
     if (parts.length >= 2) {
       const h = parseInt(parts[0], 10);
       const m = parseInt(parts[1], 10);
-      if (!isNaN(h) && !isNaN(m)) return h * 60 + m;
+      if (!isNaN(h) && !isNaN(m)) return (h * 60) + m;
     }
   }
 
-  // 2. Roster: ETA - ETD
   const etd = f.EtdLt || f.Etd;
   const eta = f.EtaLt || f.Eta;
   if (etd && eta) {
@@ -730,7 +593,6 @@ function _bfFlightTimeMins(f, log) {
     if (diff > 0) return Math.round(diff / 60000);
   }
 
-  // 3. Ei dataa → null
   return null;
 }
 
@@ -740,9 +602,7 @@ document.addEventListener('click', (ev) => {
   if (btn) setTimeout(renderBriefing, 50);
 });
 
-// Autoload kun sivu valmis
 document.addEventListener('DOMContentLoaded', () => {
-  // Jos briefing-tab on oletusnäkymä tai käyttäjä on jo siinä
   if (document.querySelector('.tab-btn[data-tab="briefing"].active')) {
     setTimeout(renderBriefing, 300);
   }
@@ -751,7 +611,6 @@ document.addEventListener('DOMContentLoaded', () => {
 /* ==============================================================
  * NOTAM-KARTTA · Briefing-sivun NOTAM-kartta
  * ============================================================== */
-
 async function _bfLoadNotamMap(flight, flightId) {
   const mapEl = document.getElementById('bf-notam-map');
   if (!mapEl) return;
@@ -759,7 +618,6 @@ async function _bfLoadNotamMap(flight, flightId) {
   const dep = String(flight?.DepartureStationIcaoCode || flight?.DepartureStationCode || '').toUpperCase();
   const arr = String(flight?.ArrivalStationIcaoCode   || flight?.ArrivalStationCode   || '').toUpperCase();
 
-  // Yritä ladata NOTAMit — mutta älä kaadu jos OFP puuttuu
   let airports = [];
   try {
     if (flightId && typeof parseOFPsForNotams === 'function') {
@@ -770,44 +628,34 @@ async function _bfLoadNotamMap(flight, flightId) {
     }
   } catch (e) {
     const msg = String(e?.message || '');
-    if (!msg.includes('422') && !msg.includes('not generated')) {
+    const isAuthIssue = msg.includes('token missing') || msg.includes('token expired') || msg.includes('authentication rejected');
+    if (!msg.includes('422') && !msg.includes('not generated') && !isAuthIssue) {
       console.warn('[Briefing] NOTAM parse failed:', e);
     }
-    // Jatketaan fallbackilla
   }
 
-  // Varmista että DEP ja DEST ovat mukana vaikka NOTAMeja ei olisi
   const ensureAirport = (icao, role) => {
     if (!icao || icao.length !== 4) return;
     if (airports.find(a => a.icao === icao)) return;
     airports.push({
-      icao,
-      role,
-      notams: [],
+      icao, role, notams: [],
       coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
     });
   };
+  
   ensureAirport(dep, 'DEP');
   ensureAirport(arr, 'DEST');
 
   const valid = airports.filter(a => a.coords && isFinite(a.coords.lat));
   if (!valid.length) {
-    mapEl.innerHTML = `
-      <div style="height:100%; display:flex; flex-direction:column; align-items:center;
-                  justify-content:center; color:var(--dim); font-size:12px;
-                  text-align:center; padding:20px; gap:6px;">
-        <div style="font-size:24px;">📡</div>
-        <div>Ei koordinaatteja reitille.</div>
-      </div>`;
+    mapEl.innerHTML = `<div style="height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; color:var(--dim); font-size:12px; text-align:center; padding:20px; gap:6px;"><div style="font-size:24px;">📡</div><div>Ei koordinaatteja reitille.</div></div>`;
     return;
   }
 
-  // Renderöi kartta — great circle näkyy koska DEP ja DEST ovat mukana
   if (typeof renderNotamMap === 'function') {
     await renderNotamMap(mapEl, valid);
   }
 
-  // Esilataa WX (cached)
   if (valid.length && typeof _preloadWxForAirports === 'function') {
     _preloadWxForAirports(valid).catch(() => {});
   }

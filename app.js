@@ -479,12 +479,8 @@ let _refreshLastError = null;
 const REFRESH_FAIL_COOLDOWN_MS = 5 * 60 * 1000;   // 5 min
 
 async function _refreshSkyplanToken(refreshToken) {
-  // 1. Cooldown — älä yritä uudelleen heti epäonnistumisen jälkeen
+  // 1. Cooldown — HILJAINEN return (ei logitusta)
   if (_refreshFailedAt && (Date.now() - _refreshFailedAt) < REFRESH_FAIL_COOLDOWN_MS) {
-    const remainingSec = Math.ceil(
-      (REFRESH_FAIL_COOLDOWN_MS - (Date.now() - _refreshFailedAt)) / 1000
-    );
-    console.log(`[Token] Refresh cooldown — yritetään uudelleen ${remainingSec} s kuluttua`);
     return null;
   }
 
@@ -532,10 +528,18 @@ async function _refreshSkyplanToken(refreshToken) {
       if (!resp.ok) {
         let bodyText = '';
         try { bodyText = await resp.text(); } catch (e) {}
+        
+        // Yksi selkeä viesti — käyttäjä näkee että jotain on vialla
         console.warn(
-          `[Token] Refresh HTTP ${resp.status}`,
-          bodyText ? '— ' + bodyText.slice(0, 200) : ''
+          `[Token] Refresh epäonnistui (HTTP ${resp.status})` +
+          ` — käytetään cachea ${Math.round(REFRESH_FAIL_COOLDOWN_MS/60000)} min ajan.` +
+          ` Uusi token: Asetukset → SKYPLAN REFRESH TOKEN.`
         );
+        
+        if (bodyText) {
+          console.warn('[Token] Palvelimen vastaus:', bodyText.slice(0, 200));
+        }
+        
         _refreshFailedAt = Date.now();
         _refreshLastError = 'HTTP ' + resp.status;
         return null;
@@ -605,8 +609,10 @@ window._resetRefreshCooldown = function() {
  * GET VALID TOKEN · älykäs tokenin haku + refresh
  * ============================================================== */
 window.getValidSkyplanToken = async function() {
+  /* ==========================================================
+   * 0. Offline — palauta cached token hiljaisesti
+   * ========================================================== */
   if (!navigator.onLine) {
-    console.log('[Token] Offline — palautetaan cached access token');
     try {
       const cached = localStorage.getItem('skyplan_token');
       if (cached && cached.length > 20) return cached;
@@ -614,32 +620,26 @@ window.getValidSkyplanToken = async function() {
     return null;
   }
 
+  /* ==========================================================
+   * 1. Cooldown-tila — HILJAINEN early return
+   * ==========================================================
+   * Jos refresh on epäonnistunut äskettäin, älä yritä uudelleen
+   * äläkä logita. Tämä estää konsolin tulvimisen.
+   * ========================================================== */
+  if (_refreshFailedAt && (Date.now() - _refreshFailedAt) < REFRESH_FAIL_COOLDOWN_MS) {
+    return null;
+  }
+
+  /* ==========================================================
+   * 2. Jos refresh on jo käynnissä → odota
+   * ========================================================== */
   if (window._skyplanTokenPromise) {
     return await window._skyplanTokenPromise;
   }
 
-  const safePromptModal = async () => {
-    // ESTÄ 4x MODAALI: älä näytä uutta modaalia jos edellinen oli <10s sitten.
-    // 500-virheen tapauksessa käyttäjä ei voi tehdä mitään → ei modaalia.
-    if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) {
-      console.log('[Token] Modal näytetty hiljattain — ohitetaan');
-      return null;
-    }
-    
-    if (typeof promptForTokenModal === 'function') {
-      try {
-        _lastModalShownAt = Date.now();
-        window._skyplanTokenPromise = promptForTokenModal();
-        const newToken = await window._skyplanTokenPromise;
-        return newToken ? String(newToken).trim()
-          .replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '').trim() : null;
-      } finally {
-        window._skyplanTokenPromise = null;
-      }
-    }
-    return null;
-  };
-
+  /* ==========================================================
+   * 3. Apurit
+   * ========================================================== */
   const parseJwt = (t) => {
     if (typeof decodeJWT === 'function') {
       try {
@@ -661,6 +661,9 @@ window.getValidSkyplanToken = async function() {
     } catch (e) { return null; }
   };
 
+  /* ==========================================================
+   * 4. Hae tokenit
+   * ========================================================== */
   let token = null;
   let refreshToken = null;
   try {
@@ -686,7 +689,9 @@ window.getValidSkyplanToken = async function() {
     }
   }
 
-  // 1. Access token vielä voimassa (>5 min jäljellä) → palauta sellaisenaan
+  /* ==========================================================
+   * 5. Access token vielä voimassa (>5 min jäljellä)
+   * ========================================================== */
   if (token) {
     const decoded = parseJwt(token);
     if (decoded && typeof decoded.exp === 'number') {
@@ -695,13 +700,29 @@ window.getValidSkyplanToken = async function() {
     }
   }
 
-  // 2. Ei access tokenia → ensimmäinen käyttö
+  /* ==========================================================
+   * 6. Ei access tokenia → ensimmäinen käyttö
+   * ========================================================== */
   if (!token) {
-    console.log('[Token] Ei tokenia — pyydetään käyttäjältä');
-    return await safePromptModal();
+    if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) return null;
+    
+    if (typeof promptForTokenModal === 'function') {
+      try {
+        _lastModalShownAt = Date.now();
+        window._skyplanTokenPromise = promptForTokenModal();
+        const newToken = await window._skyplanTokenPromise;
+        return newToken ? String(newToken).trim()
+          .replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '').trim() : null;
+      } finally {
+        window._skyplanTokenPromise = null;
+      }
+    }
+    return null;
   }
 
-  // 3. Access token vanhentunut — tarkista refresh token
+  /* ==========================================================
+   * 7. Access vanhentunut — tarkista refresh token
+   * ========================================================== */
   if (refreshToken && refreshToken.length > 10) {
     const decodedRefresh = parseJwt(refreshToken);
     const refreshExpired = decodedRefresh && decodedRefresh.exp
@@ -710,29 +731,53 @@ window.getValidSkyplanToken = async function() {
     if (refreshExpired) {
       // Refresh token oikeasti vanhentunut → käyttäjän pakko syöttää uusi
       console.log('[Token] Refresh token vanhentunut — pyydetään käyttäjältä');
-      return await safePromptModal();
+      if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) return null;
+      
+      if (typeof promptForTokenModal === 'function') {
+        try {
+          _lastModalShownAt = Date.now();
+          window._skyplanTokenPromise = promptForTokenModal();
+          const newToken = await window._skyplanTokenPromise;
+          return newToken ? String(newToken).trim()
+            .replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '').trim() : null;
+        } finally {
+          window._skyplanTokenPromise = null;
+        }
+      }
+      return null;
     }
     
     // Refresh token on voimassa → yritä refresh
-    console.log('[Token] Access vanhentunut — uusitaan refresh tokenilla');
+    // HUOM: tämä logitus on tarkoituksella vain kerran — _refreshSkyplanToken
+    // hoitaa tarkemman logiikan ja cooldownin asetuksen.
     try {
       const newToken = await _refreshSkyplanToken(refreshToken);
       if (newToken) return newToken;
     } catch (e) {
-      console.warn('[Token] Refresh epäonnistui:', e.message);
+      console.warn('[Token] Refresh poikkeus:', e.message);
     }
     
-    // Refresh epäonnistui (500, timeout, cooldown).
-    // ÄLÄ näytä modaalia — tämä on palvelimen ongelma, ei käyttäjän.
-    // Topbar näyttää "⚠️ vanhentunut" — käyttäjä voi klikata sitä
-    // ja mennä Settingsiin päivittämään tokenin manuaalisesti.
-    console.log('[Token] Refresh epäonnistui — ei näytetä modaalia (cooldown aktiivinen)');
+    // Refresh epäonnistui → cooldown on nyt asetettu, ei logiteta
     return null;
   }
 
-  // 4. Ei refresh tokenia mutta access token on → pakko hakea uusi
-  console.log('[Token] Ei refresh tokenia — pyydetään käyttäjältä');
-  return await safePromptModal();
+  /* ==========================================================
+   * 8. Ei refresh tokenia → pakko hakea uusi
+   * ========================================================== */
+  if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) return null;
+  
+  if (typeof promptForTokenModal === 'function') {
+    try {
+      _lastModalShownAt = Date.now();
+      window._skyplanTokenPromise = promptForTokenModal();
+      const newToken = await window._skyplanTokenPromise;
+      return newToken ? String(newToken).trim()
+        .replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '').trim() : null;
+    } finally {
+      window._skyplanTokenPromise = null;
+    }
+  }
+  return null;
 };
 
 /* ==============================================================

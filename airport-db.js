@@ -368,5 +368,5 @@ window.getAirportName = getAirportName;
 
     return null;
   };
-  console.log('[AirportDB] _icaoCoords-wrapper asennettu');
+
 })();

@@ -12,6 +12,7 @@ function _wxProxied(targetUrl) {
 }
 
 let _ofpLoadFailed = {};
+let _homeLoadGen = 0;   // ← generaatiotunnistin reitin lataukselle
 
 /* ---------------- Cache ---------------- */
 function _wxCacheRead() {
@@ -345,18 +346,6 @@ function _findCurrentAndNextFlights() {
 }
 
 async function renderHomeDashboard() {
-  // Varmista ettei ancestor aseta containing blockia .home-map-card:lle
-  try {
-    const cardEl = document.getElementById('home-map-card');
-    const panel = cardEl?.closest('.tab-panel');
-    if (panel) panel.style.transform = 'none';
-    if (panel) panel.style.filter = 'none';
-    if (panel) panel.style.contain = 'none';
-    if (panel) panel.style.willChange = 'auto';
-    const content = cardEl?.closest('.content');
-    if (content) content.style.transform = 'none';
-  } catch (e) {}
-  
   // Tyhjennä edelliset intervallit
   if (window._standRefreshTimer) {
     clearInterval(window._standRefreshTimer);
@@ -528,9 +517,13 @@ async function renderHomeDashboard() {
     }
   }
 
-  // ============ Kartan optiot — mobiililla light mode ============
+  // Kartan optiot — mobiililla light mode
   const _isMobile = /iPad|iPhone|iPod|Android/i.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  let notamAirports = [];
+  let extraAirports = [];
+  let waypointList = [];
 
   const mapOpts = {
     realistic: !_isMobile,
@@ -547,66 +540,105 @@ async function renderHomeDashboard() {
     }
   };
 
-  let notamAirports = [];
-  let extraAirports = [];
-  let waypointList = [];
-
-  // ============ Renderöi kartta HETI ============
+  // Renderöi kartta HETI
   if (typeof renderFlightMap === 'function') {
     renderFlightMap(mapEl, dep, arr, mapOpts);
   }
 
-  // ============ Lataa OFP-data + WX taustalla ============
+  // Lataa OFP-data + WX taustalla
+    // ============ Lataa OFP-data + WX taustalla ============
   (async () => {
-    // 1. NOTAMit
+    const loadGen = ++_homeLoadGen;
+
+    /* --------------------------------------------------------
+     * Onko data jo cachessa? Jos on → älä näytä loading-modalia
+     * -------------------------------------------------------- */
+    let skipLoader = false;
     try {
-      if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
-        const data = await parseOFPsForNotams(fid);
-        if (typeof buildAirportData === 'function') {
-          notamAirports = buildAirportData(data.notams, flight);
-          extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+      const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v1') || '{}');
+      const wpHit = wpCache[fid];
+      const wpFresh = wpHit && (Date.now() - new Date(wpHit.at).getTime()) < 60 * 60 * 1000;
+
+      const notamCache = JSON.parse(localStorage.getItem('notam_ofp_cache_v3') || '{}');
+      const notamHit = notamCache[fid];
+      const notamFresh = notamHit && (Date.now() - new Date(notamHit.at).getTime()) < 30 * 60 * 1000;
+
+      if (wpFresh && notamFresh) skipLoader = true;
+    } catch (e) {}
+
+    /* --------------------------------------------------------
+     * Viivästetty loading-modal (300 ms)
+     * - Nopea lataus (cache) ei väläytä
+     * - Hidas lataus näyttää selvän indikaattorin
+     * - 15 s safety-timeout estää ikuisen spinnerin
+     * -------------------------------------------------------- */
+    let loaderShown = false;
+    let loaderTimer = null;
+    let loaderSafetyTimer = null;
+
+    if (!skipLoader && typeof showModalLoader === 'function') {
+      loaderTimer = setTimeout(() => {
+        if (loadGen !== _homeLoadGen) return;
+
+        showModalLoader(
+          'Ladataan reittiä…',
+          `<strong>${flightNum}</strong> · ${dep} → ${arr}`
+        );
+        loaderShown = true;
+
+        // Safety: piilota 15 s kuluttua vaikka pyyntö olisi kesken
+        loaderSafetyTimer = setTimeout(() => {
+          if (typeof hideModalLoader === 'function') hideModalLoader();
+          loaderShown = false;
+        }, 15000);
+      }, 300);
+    }
+
+    try {
+      // 1. NOTAMit
+      try {
+        if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
+          const data = await parseOFPsForNotams(fid);
+          if (loadGen !== _homeLoadGen) return;
+          if (typeof buildAirportData === 'function') {
+            notamAirports = buildAirportData(data.notams, flight);
+            extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+          }
+        }
+      } catch (e) {
+        const msg = String(e?.message || '');
+        const isAuthIssue = msg.includes('token missing')
+                         || msg.includes('token expired')
+                         || msg.includes('authentication rejected');
+        if (msg.includes('HTTP 422') || msg.includes('not generated')) {
+          _ofpLoadFailed[fid] = true;
+        } else if (!isAuthIssue) {
+          console.warn('[HomeMap] NOTAM parse failed:', e);
         }
       }
-    } catch (e) {
-      const msg = String(e?.message || '');
-      if (msg.includes('HTTP 422') || msg.includes('not generated')) {
-        _ofpLoadFailed[fid] = true;
-      } else {
-        console.warn('[HomeMap] NOTAM parse failed:', e);
-      }
-    }
 
-    // 2. Waypointit
-    try {
-      if (typeof parseOFPsForWaypoints === 'function' && fid && !_ofpLoadFailed[fid]) {
-        const wpData = await parseOFPsForWaypoints(fid);
-        waypointList = wpData.waypoints || [];
-      }
-    } catch (e) {
-      const msg = String(e?.message || '');
-      if (msg.includes('HTTP 422') || msg.includes('not generated')) {
-        _ofpLoadFailed[fid] = true;
-      } else {
-        console.warn('[HomeMap] Waypoint parse failed:', e);
-      }
-    }
-
-    // 3. Re-render waypointeilla
-    if (waypointList.length > 0 || extraAirports.length > 0) {
-      if (typeof renderFlightMap === 'function') {
-        renderFlightMap(mapEl, dep, arr, {
-          ...mapOpts,
-          extraAirports,
-          waypoints: waypointList
-        });
-      }
-    }
-
-    // 4. WX-lataus + re-render kun data cachessa
-    if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
+      // 2. Waypointit
       try {
-        await _preloadWxForAirports(notamAirports);
-        // WX-merkit ilmestyvät vasta kun kartta renderöidään uudelleen
+        if (typeof parseOFPsForWaypoints === 'function' && fid && !_ofpLoadFailed[fid]) {
+          const wpData = await parseOFPsForWaypoints(fid);
+          if (loadGen !== _homeLoadGen) return;
+          waypointList = wpData.waypoints || [];
+        }
+      } catch (e) {
+        const msg = String(e?.message || '');
+        const isAuthIssue = msg.includes('token missing')
+                         || msg.includes('token expired')
+                         || msg.includes('authentication rejected');
+        if (msg.includes('HTTP 422') || msg.includes('not generated')) {
+          _ofpLoadFailed[fid] = true;
+        } else if (!isAuthIssue) {
+          console.warn('[HomeMap] Waypoint parse failed:', e);
+        }
+      }
+
+      // 3. Re-render waypointeilla
+      if (loadGen !== _homeLoadGen) return;
+      if (waypointList.length > 0 || extraAirports.length > 0) {
         if (typeof renderFlightMap === 'function') {
           renderFlightMap(mapEl, dep, arr, {
             ...mapOpts,
@@ -614,8 +646,31 @@ async function renderHomeDashboard() {
             waypoints: waypointList
           });
         }
-      } catch (e) {
-        // Hiljainen — WX-merkit jäävät puuttumaan mutta kartta toimii
+      }
+
+      // 4. WX-lataus + re-render
+      if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
+        try {
+          await _preloadWxForAirports(notamAirports);
+          if (loadGen !== _homeLoadGen) return;
+          if (typeof renderFlightMap === 'function') {
+            renderFlightMap(mapEl, dep, arr, {
+              ...mapOpts,
+              extraAirports,
+              waypoints: waypointList
+            });
+          }
+        } catch (e) {}
+      }
+
+    } finally {
+      /* --------------------------------------------------------
+       * Siivoa loading-modal
+       * -------------------------------------------------------- */
+      if (loaderTimer) clearTimeout(loaderTimer);
+      if (loaderSafetyTimer) clearTimeout(loaderSafetyTimer);
+      if (loaderShown && typeof hideModalLoader === 'function') {
+        hideModalLoader();
       }
     }
   })();
@@ -648,6 +703,7 @@ async function renderHomeDashboard() {
   }, 30000);
 }
 window.renderHomeDashboard = renderHomeDashboard;
+
 
 /* ==============================================================
  * Kartan sisäinen popup

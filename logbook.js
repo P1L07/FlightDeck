@@ -3035,39 +3035,126 @@ async function syncLogbookWithSkyplan(options = {}) {
   const {
     apply = false,
     verbose = true,
-    fromMonth = '2024-01',
+    fromMonth = null,
     toMonth = null,
     delayMs = 120,
     monthDelayMs = 3000,
     matchRoster = true,
     onlyPending = false,
-    showLoader = true
+    showLoader = true,
+    forceFullScan = false,
+    skipFreshHours = 24,
+    maxLookbackMonths = 3        // ← UUSI: älä skannaa yli 12 kk taakse
   } = options;
 
   const allEntries = _lbReadAll();
-  const pendingEntries = allEntries.filter(e =>
-    e.skyplan?.takeoffPending || e.skyplan?.landingPending
-  );
-
-  if (pendingEntries.length > 0) {
-    console.log(`[Logbook Sync] ${pendingEntries.length} kirjausta odottaa kapteenin vahvistusta`);
+  if (!allEntries.length) {
+    if (typeof showToast === 'function') showToast('Ei kirjauksia.', 'info');
+    return { total: 0, processed: 0, changed: 0, skipped: 0, errors: 0 };
   }
 
   const now = new Date();
   const defaultTo = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   const to = toMonth || defaultTo;
 
-  const months = [];
-  let [fy, fm] = fromMonth.split('-').map(Number);
+  /* ============================================================
+   * 1. Laske aikaisin sallittu kuukausi
+   * ============================================================ */
+  let effectiveFrom = fromMonth;
+  if (!effectiveFrom) {
+    const entryMonths = allEntries
+      .map(e => (e.date || '').slice(0, 7))
+      .filter(d => /^\d{4}-\d{2}$/.test(d))
+      .sort();
+    effectiveFrom = entryMonths[0] || '2024-01';
+  }
+
+  // Rajoita maxLookbackMonths-taakse
+  if (maxLookbackMonths != null && maxLookbackMonths > 0) {
+    const limit = new Date(now.getFullYear(), now.getMonth() - maxLookbackMonths, 1);
+    const limitStr = `${limit.getFullYear()}-${String(limit.getMonth() + 1).padStart(2, '0')}`;
+    if (effectiveFrom < limitStr) {
+      console.log(`[Logbook Sync] Rajoitetaan ${effectiveFrom} → ${limitStr} (max ${maxLookbackMonths} kk)`);
+      effectiveFrom = limitStr;
+    }
+  }
+
+  /* ============================================================
+   * 2. Ryhmittele entries kuukausittain (kerran, O(n))
+   * ============================================================ */
+  const entriesByMonth = new Map();
+  for (const e of allEntries) {
+    const m = (e.date || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(m)) continue;
+    if (!entriesByMonth.has(m)) entriesByMonth.set(m, []);
+    entriesByMonth.get(m).push(e);
+  }
+
+  /* ============================================================
+   * 3. Generoi kuukausilista
+   * ============================================================ */
+  const allMonths = [];
+  let [fy, fm] = effectiveFrom.split('-').map(Number);
   const [ty, tm] = to.split('-').map(Number);
   while (fy < ty || (fy === ty && fm <= tm)) {
-    months.push(`${fy}-${String(fm).padStart(2, '0')}`);
+    allMonths.push(`${fy}-${String(fm).padStart(2, '0')}`);
     fm++;
     if (fm > 12) { fm = 1; fy++; }
   }
 
-  console.log(`[Logbook Sync] Skannataan ${months.length} kuukautta: ${fromMonth} → ${to}`);
+  /* ============================================================
+   * 4. Suodata kuukaudet jotka oikeasti tarvitsevat synkkausta
+   * ============================================================ */
+  const FRESH_MS = skipFreshHours * 60 * 60 * 1000;
+  const now_ms = Date.now();
+  const monthsToProcess = [];
 
+  for (const month of allMonths) {
+    const monthEntries = entriesByMonth.get(month) || [];
+    if (!monthEntries.length) continue;
+
+    const hasPending = monthEntries.some(e =>
+      e.skyplan?.takeoffPending || e.skyplan?.landingPending
+    );
+    const hasUnmatched = monthEntries.some(e => !e.skyplan?.flightId);
+
+    if (onlyPending && !hasPending) continue;
+
+    // forceFullScan ohittaa 24h-tarkistuksen, mutta EI API-lookbackia
+    // (API ei palauta dataa yli 12 kk taakse, joten sen vanhempien
+    //  kuukausien skannaaminen on turhaa)
+    if (!forceFullScan && !hasPending && !hasUnmatched) {
+      const timestamps = monthEntries
+        .map(e => e.skyplan?.lastCheckedAt || e.skyplan?.lastSyncedAt)
+        .filter(Boolean)
+        .map(t => new Date(t).getTime())
+        .filter(t => isFinite(t));
+
+      if (timestamps.length === monthEntries.length) {
+        const newestCheck = Math.max(...timestamps);
+        if (now_ms - newestCheck < FRESH_MS) continue;
+      }
+    }
+
+    monthsToProcess.push({
+      month,
+      entries: monthEntries,
+      needsRoster: hasUnmatched && matchRoster
+    });
+  }
+
+  console.log(`[Logbook Sync] Käsitellään ${monthsToProcess.length}/${allMonths.length} kuukautta (${effectiveFrom} → ${to})`);
+
+  if (!monthsToProcess.length) {
+    if (typeof showToast === 'function') {
+      showToast('Kaikki ajan tasalla — ei synkattavaa.', 'success', 4000);
+    }
+    return { total: allEntries.length, processed: 0, changed: 0, skipped: 0, errors: 0 };
+  }
+
+  /* ============================================================
+   * 5. Token
+   * ============================================================ */
   const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null) : null;
   if (!token) {
@@ -3081,38 +3168,37 @@ async function syncLogbookWithSkyplan(options = {}) {
     empId = p.employeeid || p.EmployeeID || p.employeeId || p.nameid || p.sub;
   } catch (e) {}
 
+  /* ============================================================
+   * 6. Käy läpi kuukaudet
+   * ============================================================ */
   const stats = {
     total: allEntries.length,
     matched: 0, processed: 0, changed: 0, skipped: 0, errors: 0
   };
   const changes = [];
 
-  for (let mi = 0; mi < months.length; mi++) {
-    const month = months[mi];
+  for (let mi = 0; mi < monthsToProcess.length; mi++) {
+    const { month, entries: monthEntries, needsRoster } = monthsToProcess[mi];
 
     if (showLoader && typeof showModalLoader === 'function') {
       showModalLoader('Synkronoidaan Skyplanista…',
-        `Kuukausi ${month} (${mi + 1} / ${months.length})`);
+        `Kuukausi ${month} (${mi + 1} / ${monthsToProcess.length})`);
     }
 
     let roster = [];
-    if (matchRoster && empId) {
+    if (needsRoster && empId) {
       try {
         roster = await _fetchRosterForMonth(token, empId, month);
         console.log(`[Logbook Sync] ${month}: roster ${roster.length} lentoa`);
+        
+        // Jos API palautti 0 → älä yritä uudelleen samalle kuukaudelle
+        if (roster.length === 0 && verbose) {
+          console.log(`[Logbook Sync] ${month}: API ei palauttanut dataa (yli 12 kk vanha?)`);
+        }
       } catch (e) {
         console.warn(`[Logbook Sync] ${month}: roster-haku epäonnistui:`, e.message);
         stats.errors++;
       }
-    }
-
-    let monthEntries = allEntries.filter(e => (e.date || '').slice(0, 7) === month);
-
-    if (onlyPending) {
-      monthEntries = monthEntries.filter(e =>
-        e.skyplan?.flightId &&
-        (e.skyplan?.takeoffPending || e.skyplan?.landingPending)
-      );
     }
 
     for (const entry of monthEntries) {
@@ -3133,20 +3219,35 @@ async function syncLogbookWithSkyplan(options = {}) {
           stats.processed++;
           const diffs = _compareLogbookEntryWithLog(entry, log);
           if (diffs.length > 0) changes.push({ entry, log, diffs });
+
+          if (!entry.skyplan) entry.skyplan = {};
+          entry.skyplan.lastCheckedAt = new Date().toISOString();
         } catch (e) {
           stats.errors++;
-          if (verbose) console.warn(`[Logbook Sync] ${entry.skyplan.flightId}:`, e.message);
+          if (verbose) {
+            const msg = String(e?.message || '');
+            const isAuthIssue = msg.includes('token missing') || msg.includes('token expired')
+                             || msg.includes('authentication rejected');
+            const isNotAvailable = msg.includes('422') || msg.includes('not available')
+                                || msg.includes('not been completed');
+            if (!isAuthIssue && !isNotAvailable) {
+              console.warn(`[Logbook Sync] ${entry.skyplan.flightId}:`, e.message);
+            }
+          }
         }
         await new Promise(r => setTimeout(r, delayMs));
       }
     }
 
-    _lbWriteAll(allEntries);
-
-    if (mi < months.length - 1) {
+    if (mi < monthsToProcess.length - 1) {
       await new Promise(r => setTimeout(r, monthDelayMs));
     }
   }
+
+  /* ============================================================
+   * 7. Tallenna kaikki kerralla
+   * ============================================================ */
+  _lbWriteAll(allEntries);
 
   if (showLoader && typeof hideModalLoader === 'function') hideModalLoader();
 

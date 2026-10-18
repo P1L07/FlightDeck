@@ -2,7 +2,7 @@
  * NOTAM-OFP · NOTAMit ja waypointit OFP-PDF:stä
  * ==============================================================
  * Käyttää:
- *   - getLinesFromPDFPage(page)      ← ofp-parser.js
+ *   - getLinesFromPDFPage(page)       ← ofp-parser.js
  *   - extractNOTAMs(lines)            ← ofp-parser.js
  *   - extractCoordFromString(text)    ← ofp-parser.js
  *   - buildRows(items)                ← ofp-parser.js
@@ -116,8 +116,11 @@ async function _notamReadPDFLines(pdfBytes) {
   if (typeof pdfjsLib === 'undefined') throw new Error('pdf.js puuttuu');
   if (typeof getLinesFromPDFPage !== 'function') throw new Error('getLinesFromPDFPage puuttuu');
 
-  const data = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  // KORJAUS: Tehdään kopio datasta (.slice(0)), jotta pdf.js ei "irrota" alkuperäistä puskuria!
+  const bufferCopy = pdfBytes.slice ? pdfBytes.slice(0) : pdfBytes;
+  const data = new Uint8Array(bufferCopy);
   const pdf = await pdfjsLib.getDocument({ data }).promise;
+  
   const allLines = [];
 
   try {
@@ -372,7 +375,7 @@ window.buildAirportData = buildAirportData;
  * WAYPOINT-PARSERI · NAV LOG -sivut OFP:stä
  * ==============================================================
  * Palauttaa: [{ name, lat, lon, level, track, wind, tas, gs, sr,
- *               totalMins, fob, rawTime, page, y_anchor }]
+ *              totalMins, fob, rawTime, page, y_anchor }]
  * ============================================================== */
 
 const NOTAM_WP_CACHE_KEY = 'notam_wp_cache_v1';
@@ -522,9 +525,12 @@ async function parseOFPsForWaypoints(flightId) {
     }
   } catch (e) {}
 
-  // Hae PDF (jaettu cache — ei lataa uudelleen jos NOTAM-parseri jo haki)
+  // Hae PDF (jaettu cache)
   const entry = await _getPDFBytesForFlight(fid);
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(entry.bytes) }).promise;
+  
+  // KORJAUS: Tehdään kopio datasta (.slice(0)), jotta pdf.js ei irrota alkuperäistä puskuria
+  const bufferCopy = entry.bytes.slice ? entry.bytes.slice(0) : entry.bytes;
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(bufferCopy) }).promise;
 
   let waypoints = [];
   try {

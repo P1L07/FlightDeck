@@ -15,44 +15,46 @@
 <link rel="apple-touch-icon" sizes="167x167" href="apple-touch-icon.png">
 <link rel="stylesheet" href="styles.css">
 
-<!-- 1. Ulkoiset kirjastot -->
-<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<!-- 0. Nopeuta CDN-yhteyksien avaamista -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+
+<!-- 1. Ulkoiset kirjastot (defer = ladataan taustalla, suoritetaan järjestyksessä) -->
+<script defer src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 
 <!-- 2. Versio + migraatiot -->
-<script src="version.js"></script>
-<script src="db.js"></script>
+<script defer src="version.js"></script>
+<script defer src="db.js"></script>
 
 <!-- 3. Sovellusinfra -->
-<script src="app.js"></script>
+<script defer src="app.js"></script>
 
-<!-- 4. Lokikirja -->
-<script src="logbook.js"></script>
-
-<!-- 4b. Lentokenttätietokanta (asentaa _icaoCoords-wrapperin) -->
-<script src="airport-db.js"></script>
+<!-- 4. Lokikirja & DB -->
+<script defer src="logbook.js"></script>
+<script defer src="airport-db.js"></script>
 
 <!-- 5. Muut moduulit -->
-<script src="map.js"></script>
-<script src="ofp-parser.js"></script>
-<script src="ofp-data.js"></script>
-<script src="ofp-map.js"></script>
-<script src="weather.js"></script>
-<script src="weekview.js"></script>
-<script src="roster.js"></script>
-<script src="audit.js"></script>
-<script src="offline.js"></script>
-<script src="flight-utils.js"></script>
-<script src="friends.js"></script>
-<script src="favorites.js"></script>
-<script src="defects.js"></script>
-<script src="briefing.js"></script>
-<script src="tripinfo.js"></script>
-<script src="notam.js"></script>
+<script defer src="map.js"></script>
+<script defer src="ofp-parser.js"></script>
+<script defer src="ofp-data.js"></script>
+<script defer src="ofp-map.js"></script>
+<script defer src="weather.js"></script>
+<script defer src="weekview.js"></script>
+<script defer src="roster.js"></script>
+<script defer src="audit.js"></script>
+<script defer src="offline.js"></script>
+<script defer src="flight-utils.js"></script>
+<script defer src="friends.js"></script>
+<script defer src="favorites.js"></script>
+<script defer src="defects.js"></script>
+<script defer src="briefing.js"></script>
+<script defer src="tripinfo.js"></script>
+<script defer src="notam.js"></script>
 </head>
 
 <body>
@@ -68,26 +70,11 @@
     <div class="boot-sub">Initializing systems…</div>
 
     <div class="boot-steps" id="boot-steps">
-      <div class="boot-step" data-step="db">
-        <span class="boot-step-icon">○</span>
-        <span class="boot-step-label">IndexedDB</span>
-      </div>
-      <div class="boot-step" data-step="user">
-        <span class="boot-step-icon">○</span>
-        <span class="boot-step-label">Käyttäjä</span>
-      </div>
-      <div class="boot-step" data-step="airports">
-        <span class="boot-step-icon">○</span>
-        <span class="boot-step-label">Lentokenttätietokanta</span>
-      </div>
-      <div class="boot-step" data-step="roster">
-        <span class="boot-step-icon">○</span>
-        <span class="boot-step-label">Roster</span>
-      </div>
-      <div class="boot-step" data-step="map">
-        <span class="boot-step-icon">○</span>
-        <span class="boot-step-label">Kartta</span>
-      </div>
+      <div class="boot-step" data-step="db"><span class="boot-step-icon">○</span><span class="boot-step-label">IndexedDB</span></div>
+      <div class="boot-step" data-step="user"><span class="boot-step-icon">○</span><span class="boot-step-label">Käyttäjä</span></div>
+      <div class="boot-step" data-step="airports"><span class="boot-step-icon">○</span><span class="boot-step-label">Lentokenttätietokanta</span></div>
+      <div class="boot-step" data-step="roster"><span class="boot-step-icon">○</span><span class="boot-step-label">Roster</span></div>
+      <div class="boot-step" data-step="map"><span class="boot-step-icon">○</span><span class="boot-step-label">Kartta</span></div>
     </div>
 
     <div class="boot-progress">
@@ -106,10 +93,7 @@
 <!-- ============ Top status bar ============ -->
 <header class="topbar">
   <div class="brand">
-    <div class="brand-logo">
-      <span>FD</span>
-      <span class="brand-ring"></span>
-    </div>
+    <div class="brand-logo"><span>FD</span><span class="brand-ring"></span></div>
     <div class="brand-text">
       <div class="brand-title">FLIGHT<span>DECK</span></div>
       <div class="brand-sub" id="topbar-sub">Standing by…</div>
@@ -125,14 +109,9 @@
       <span class="tc-icon">😴</span>
       <span class="tc-time" id="topbar-countdown-time">–</span>
     </div>
-    <div id="token-warning" style="display:none; align-items:center; gap:6px;
-         padding:6px 12px; border-radius:999px; background:rgba(255,179,0,0.12);
-         border:1px solid rgba(255,179,0,0.4); cursor:pointer;"
-         onclick="switchTab('settings')"
-         title="Token vanhenee pian — klikkaa päivittääksesi">
+    <div id="token-warning" style="display:none; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; background:rgba(255,179,0,0.12); border:1px solid rgba(255,179,0,0.4); cursor:pointer;" onclick="switchTab('settings')" title="Token vanhenee pian — klikkaa päivittääksesi">
       <span style="font-size:14px;">⚠️</span>
-      <span id="token-warning-time" style="font-size:12px; font-weight:700;
-            color:var(--warning); font-family:var(--font-mono);">–</span>
+      <span id="token-warning-time" style="font-size:12px; font-weight:700; color:var(--warning); font-family:var(--font-mono);">–</span>
     </div>
     <div class="clock" id="live-clock">--:--</div>
   </div>
@@ -143,29 +122,19 @@
 
   <!-- HOME -->
   <section class="tab-panel active" id="tab-home">
-
     <div class="home-map-card" id="home-map-card">
       <div class="home-map-bg" id="fc-map"></div>
-
       <div class="home-map-hero">
         <div class="hero-greet">
           <span class="greet-line">Hei,</span>
           <span class="greet-name" id="user-name">Kapteeni</span>
         </div>
-        <div class="hero-status">
-          <span class="pulse-dot"></span>
-          <span id="duty-status">Valmiustilassa</span>
-        </div>
       </div>
-
       <div class="home-map-overlay" id="home-map-overlay" style="display:none;"></div>
-
       <div class="home-map-empty" id="home-map-empty" style="display:none;">
         <div style="font-size:32px; margin-bottom:8px;">✈</div>
         <div style="font-weight:600; color:var(--text);">Ei tulevia lentoja</div>
-        <div style="font-size:12px; color:var(--dim); margin-top:6px;">
-          Synkkaa roster nähdäksesi seuraavan lennon
-        </div>
+        <div style="font-size:12px; color:var(--dim); margin-top:6px;">Synkkaa roster nähdäksesi seuraavan lennon</div>
       </div>
     </div>
   </section>
@@ -174,11 +143,8 @@
   <section class="tab-panel" id="tab-flights">
     <div class="section-head">
       <div class="sh-left"><h2>Lentotehtävät</h2></div>
-      <div class="sh-right">
-        <span class="badge-offline" id="assigned-cache-badge" style="display:none;">OFFLINE</span>
-      </div>
+      <div class="sh-right"><span class="badge-offline" id="assigned-cache-badge" style="display:none;">OFFLINE</span></div>
     </div>
-
     <div class="toolbar">
       <div class="toolbar-content" id="toolbar-week">
         <button class="wk-nav-btn" onclick="weekViewPrev()" title="Edellinen viikko">←</button>
@@ -187,12 +153,9 @@
         <button class="wk-today-btn" onclick="weekViewToday()">Tänään</button>
       </div>
     </div>
-
-    <!-- Piilotetut kentät loadAssignedFlights:lle (data-only) -->
     <input type="date" id="assigned-date-from" style="display:none;">
     <input type="date" id="assigned-date-to" style="display:none;">
     <div id="assigned-flights-container" style="display:none;"></div>
-
     <div id="week-view-container" class="week-view"></div>
   </section>
 
@@ -220,8 +183,7 @@
       <h2>Lokikirja <span class="muted">· EASA FCL.050</span></h2>
       <span id="chain-status" class="chain-status" style="display:none;"></span>
       <div class="section-actions">
-        <button class="btn-ghost" onclick="signAllFlightsForPilot()"
-                title="Allekirjoita kaikki lennot samalla kapteenilla">✍️ Allekirjoita kaikki</button>
+        <button class="btn-ghost" onclick="signAllFlightsForPilot()" title="Allekirjoita kaikki lennot samalla kapteenilla">✍️ Allekirjoita kaikki</button>
         <button class="btn-ghost" onclick="importLogbookFromCSV()">📥 Tuo CSV</button>
         <button class="btn-ghost" onclick="showExportDialog()">⬇ Vie</button>
         <button class="btn-ghost" onclick="saveLogbookPDF(window._lbEntries || [])">⎙ Tallenna PDF</button>
@@ -238,8 +200,7 @@
     <div class="card">
       <div class="card-label">METAR / TAF</div>
       <div class="row-flex">
-        <input type="text" id="wx-icao" placeholder="ICAO (esim. UAAA)"
-               maxlength="4" class="mono" style="text-transform:uppercase;">
+        <input type="text" id="wx-icao" placeholder="ICAO (esim. UAAA)" maxlength="4" class="mono" style="text-transform:uppercase;">
         <button class="btn-primary" onclick="loadWeatherForStation()">Hae</button>
       </div>
       <pre id="wx-output" class="wx-output">–</pre>
@@ -256,29 +217,19 @@
 
     <div class="card">
       <div class="card-label">SKYPLAN ACCESS TOKEN</div>
-      <textarea id="skyplan_token" class="mono" rows="4"
-                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"></textarea>
-      <div id="token-status" style="margin-top:12px; font-size:13px; padding:10px 14px;
-           border-radius:8px; background:var(--input); border:1px solid var(--border);">
+      <textarea id="skyplan_token" class="mono" rows="4" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"></textarea>
+      <div id="token-status" style="margin-top:12px; font-size:13px; padding:10px 14px; border-radius:8px; background:var(--input); border:1px solid var(--border);">
         <span style="color:var(--dim);">Ei tokenia tallennettuna</span>
       </div>
-      <div class="row-flex end">
-        <button class="btn-primary" onclick="saveTokenFromSettings()">Tallenna</button>
-      </div>
+      <div class="row-flex end"><button class="btn-primary" onclick="saveTokenFromSettings()">Tallenna</button></div>
     </div>
 
     <div class="card">
       <div class="card-label">SKYPLAN REFRESH TOKEN</div>
       <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-        Avaa Skyplan-app → 5× tap näyttöön → debug → etsi
-        <span class="mono">POST /api/v1/auth/refresh-token</span>.
-        Kopioi <b>RESPONSE → Body → RefreshToken</b> (uusi, rotautunut).
+        Avaa Skyplan-app → 5× tap näyttöön → debug → etsi <span class="mono">POST /api/v1/auth/refresh-token</span>.
       </div>
-      <textarea id="skyplan_refresh_token_input" class="mono" rows="3"
-                placeholder="eyJhbGciOiJIUzUxMiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI0NmE3NjIxYi0..."
-                style="width:100%; padding:10px; border-radius:8px; background:var(--input);
-                       color:var(--text); border:1px solid var(--border); font-size:11px;
-                       box-sizing:border-box; word-break:break-all;"></textarea>
+      <textarea id="skyplan_refresh_token_input" class="mono" rows="3" placeholder="eyJhbGciOiJIUzUxMiIs..." style="width:100%; padding:10px; border-radius:8px; background:var(--input); color:var(--text); border:1px solid var(--border); font-size:11px; box-sizing:border-box; word-break:break-all;"></textarea>
       <div id="refresh-token-status" style="margin-top:10px; font-size:12px;"></div>
       <div class="row-flex end">
         <button class="btn-ghost" onclick="clearRefreshToken()">Poista</button>
@@ -288,11 +239,8 @@
 
     <div class="card">
       <div class="card-label">AUTOROUTER API KEY</div>
-      <input type="text" id="autorouter_key" class="mono"
-             placeholder="eyJhbGciOiJSUzI1NiIs...">
-      <div class="row-flex end">
-        <button class="btn-primary" onclick="saveAutoRouterKey()">Tallenna</button>
-      </div>
+      <input type="text" id="autorouter_key" class="mono" placeholder="eyJhbGciOiJSUzI1NiIs...">
+      <div class="row-flex end"><button class="btn-primary" onclick="saveAutoRouterKey()">Tallenna</button></div>
     </div>
 
     <div class="card">
@@ -305,47 +253,25 @@
 
     <div class="card">
       <div class="card-label">LOKIKIRJAN VARMUUSKOPIO</div>
-      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-        Vie lokikirja JSON-tiedostona iCloud Driveen tai Google Driveen.
-        Voit palauttaa sen myöhemmin millä tahansa laitteella.
-      </div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">Vie lokikirja JSON-tiedostona. Voit palauttaa sen myöhemmin millä tahansa laitteella.</div>
       <div class="row-flex">
         <button class="btn-primary" onclick="exportLogbookJSON()">⬆ Vie iCloud / Drive</button>
         <button class="btn-ghost" onclick="importLogbookJSON()">⬇ Palauta tiedostosta</button>
-      </div>
-      <div style="font-size:11px; color:var(--faint); margin-top:10px;">
-        Suositus: vie varmuuskopio viikoittain. JSON sisältää myös allekirjoitukset ja hash-ketjun.
       </div>
     </div>
 
     <div class="card">
       <div class="card-label">CERTIFICATION-ALLEKIRJOITUS</div>
-      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-        Allekirjoitus joka piirretään lokikirjan PDF:ään.
-        Kysytään aina ennen PDF:n luontia, mutta muistetaan seuraavalla kerralla.
-      </div>
-      <div id="cert-sig-status" style="font-size:12px; color:var(--dim); margin-bottom:12px;">
-        Ei tallennettua allekirjoitusta
-      </div>
+      <div id="cert-sig-status" style="font-size:12px; color:var(--dim); margin-bottom:12px;">Ei tallennettua allekirjoitusta</div>
       <div class="row-flex end">
-        <button class="btn-ghost" onclick="clearCertificationSignature(); updateCertSigStatus();">
-          Poista allekirjoitus
-        </button>
-        <button class="btn-primary" onclick="promptCertificationSignature()">
-          ✍️ Piirrä allekirjoitus
-        </button>
+        <button class="btn-ghost" onclick="clearCertificationSignature(); updateCertSigStatus();">Poista</button>
+        <button class="btn-primary" onclick="promptCertificationSignature()">✍️ Piirrä</button>
       </div>
     </div>
 
     <div class="card">
       <div class="card-label">PÄIVITYS</div>
-      <div style="font-size:12.5px; color:var(--dim); line-height:1.5; margin-bottom:12px;">
-        Jos sovellus näyttää vanhaa versiota, pakota päivitys.
-        Tämä tyhjentää selaimen cachen mutta säilyttää tallennetun datan.
-      </div>
-      <div class="row-flex end">
-        <button class="btn-primary" onclick="forceAppRefresh()">⟳ Pakota päivitys</button>
-      </div>
+      <div class="row-flex end"><button class="btn-primary" onclick="forceAppRefresh()">⟳ Pakota päivitys</button></div>
     </div>
 
     <div class="card">
@@ -357,14 +283,10 @@
 
     <div class="card">
       <div class="card-label">KARTAN VISUAALISET OMINAISUUDET</div>
-      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-        Kytke päälle/pois haluamasi visuaaliset elementit. Jos kartta on hidas,
-        kokeile poistaa elementtejä yksitellen ja katso mikä auttaa.
-      </div>
-      <div id="map-features-list" style="display:flex; flex-direction:column; gap:8px;"></div>
-      <div class="row-flex end" style="margin-top:12px;">
-        <button class="btn-ghost" onclick="resetMapFeaturesUI()">Palauta oletukset</button>
-        <button class="btn-primary" onclick="applyMapFeaturesUI()">Tallenna ja päivitä</button>
+      <div id="map-features-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;"></div>
+      <div class="row-flex end">
+        <button class="btn-ghost" onclick="resetMapFeaturesUI()">Oletukset</button>
+        <button class="btn-primary" onclick="applyMapFeaturesUI()">Tallenna</button>
       </div>
     </div>
   </section>
@@ -400,35 +322,32 @@
 <script>
 'use strict';
 
-/* LOADER */
-function showModalLoader(title, sub) {
+/* LOADER & TOASTS */
+function showModalLoader(title = 'Loading…', sub = '') {
   const el = document.getElementById('global-loader');
   if (!el) return;
-  document.getElementById('loader-title').innerHTML = title || 'Loading…';
-  document.getElementById('loader-sub').innerHTML = sub || '';
+  document.getElementById('loader-title').textContent = title;
+  document.getElementById('loader-sub').textContent = sub;
   el.style.display = 'flex';
   requestAnimationFrame(() => el.classList.add('visible'));
 }
+
 function hideModalLoader() {
   const el = document.getElementById('global-loader');
   if (!el) return;
   el.classList.remove('visible');
-  setTimeout(() => { el.style.display = 'none'; }, 220);
+  setTimeout(() => el.style.display = 'none', 220);
 }
 window.showModalLoader = showModalLoader;
 window.hideModalLoader = hideModalLoader;
 
-/* TOAST */
 function showToast(message, type = 'info', duration = 3200) {
   const container = document.getElementById('toast-container');
   if (!container) return;
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
   const icons = { success: '✓', warning: '!', error: '✕', info: 'i' };
-  toast.innerHTML = `
-    <span class="toast-icon">${icons[type] || 'i'}</span>
-    <span class="toast-msg"></span>
-  `;
+  toast.innerHTML = `<span class="toast-icon">${icons[type] || 'i'}</span><span class="toast-msg"></span>`;
   toast.querySelector('.toast-msg').textContent = message;
   container.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add('visible'));
@@ -439,7 +358,7 @@ function showToast(message, type = 'info', duration = 3200) {
 }
 window.showToast = showToast;
 
-/* JWT DECODE */
+/* JWT DECODE (Korjattu paddingin matematiikka) */
 function decodeJWT(token) {
   if (!token || typeof token !== 'string') return null;
   try {
@@ -448,38 +367,25 @@ function decodeJWT(token) {
     const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
     const json = decodeURIComponent(
-      atob(padded).split('').map(c =>
-        '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
-      ).join('')
+      atob(padded).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
     );
     return JSON.parse(json);
   } catch (e) {
-    console.warn('decodeJWT failed:', e);
     return null;
   }
 }
 window.decodeJWT = decodeJWT;
 
-/* TAB-NAVIGAATIO */
+/* TABS */
 function switchTab(tabId) {
-  document.querySelectorAll('.tab-panel').forEach(p => {
-    p.classList.toggle('active', p.id === `tab-${tabId}`);
-  });
-  document.querySelectorAll('.tab-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === tabId);
-  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    if (tabId === 'flights') {
-    // Viikkonäkymä päivittyy cachesta
-    if (typeof renderWeekView === 'function') {
-      try { renderWeekView(); } catch (e) {}
-    }
-    // Jos roster on tyhjä, hae kerran
+  if (tabId === 'flights') {
+    if (typeof renderWeekView === 'function') { try { renderWeekView(); } catch (e) {} }
     let cache = [];
-    try {
-      cache = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-    } catch (e) {}
+    try { cache = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]'); } catch (e) {}
     if (!cache.length && navigator.onLine && typeof loadAssignedFlights === 'function') {
       loadAssignedFlights(false, false).catch(() => {});
     }
@@ -492,19 +398,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
-/* LIVE CLOCK */
+/* CLOCK & CONNECTION */
 function tickClock() {
   const el = document.getElementById('live-clock');
   if (!el) return;
   const now = new Date();
-  const hh = String(now.getHours()).padStart(2, '0');
-  const mm = String(now.getMinutes()).padStart(2, '0');
-  el.textContent = `${hh}:${mm}`;
+  el.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 }
 setInterval(tickClock, 1000);
 tickClock();
 
-/* ONLINE / OFFLINE */
 function updateConnStatus() {
   const wrap = document.getElementById('conn-status');
   const label = document.getElementById('conn-label');
@@ -518,25 +421,19 @@ window.addEventListener('online', updateConnStatus);
 window.addEventListener('offline', updateConnStatus);
 updateConnStatus();
 
-/* HYDRATE USER */
+/* USER HYDRATION */
 async function hydrateUser() {
   let token = null;
   if (typeof getValidSkyplanToken === 'function') {
-    try {
-      token = await getValidSkyplanToken();
-    } catch (e) {
-      console.warn('[Boot] Token refresh failed, using cached:', e.message);
-    }
+    try { token = await getValidSkyplanToken(); } catch (e) {}
   }
-  // Offline-fallback: käytä raakaa localStorage-tokenia
   if (!token) token = localStorage.getItem('skyplan_token');
   if (!token) return;
 
   const payload = decodeJWT(token) || {};
   const first = payload.given_name || payload.FirstName || payload.firstName || '';
   const last  = payload.family_name || payload.LastName  || payload.lastName  || '';
-  const empId = payload.employeeid || payload.EmployeeID || payload.employeeId
-             || payload.nameid || payload.sub || '';
+  const empId = payload.employeeid || payload.EmployeeID || payload.employeeId || payload.nameid || payload.sub || '';
   const name = [first, last].filter(Boolean).join(' ') || 'Kapteeni';
 
   const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
@@ -547,220 +444,120 @@ async function hydrateUser() {
 }
 window.hydrateUser = hydrateUser;
 
-/* TOKEN STATUS */
+/* TOKENS (Matematiikkakorjaukset tehty: *, - puuttuivat) */
 function updateTokenStatus() {
   const el = document.getElementById('token-status');
   if (!el) return;
-
   const token = localStorage.getItem('skyplan_token');
-  if (!token) {
-    el.innerHTML = '<span style="color:var(--dim);">Ei tokenia tallennettuna</span>';
-    return;
-  }
-
+  if (!token) { el.innerHTML = '<span style="color:var(--dim);">Ei tokenia</span>'; return; }
+  
   const payload = decodeJWT(token);
-  if (!payload) {
-    el.innerHTML = '<span style="color:var(--error);">⚠️ Virheellinen token</span>';
-    return;
-  }
-  if (!payload.exp) {
-    el.innerHTML = '<span style="color:var(--warning);">Token ilman vanhenemistietoa</span>';
-    return;
-  }
+  if (!payload || !payload.exp) { el.innerHTML = '<span style="color:var(--error);">Virheellinen token</span>'; return; }
 
   const exp = payload.exp * 1000;
   const diff = exp - Date.now();
 
   if (diff <= 0) {
-    el.innerHTML = `
-      <div style="color:var(--error); font-weight:700;">⚠️ Token vanhentunut</div>
-      <div style="font-size:11.5px; color:var(--dim); margin-top:4px;">
-        Vanheni: ${new Date(exp).toLocaleString('fi-FI')}
-      </div>`;
+    el.innerHTML = `<div style="color:var(--error); font-weight:700;">⚠️ Token vanhentunut</div>`;
     return;
   }
 
   const hours = Math.floor(diff / (60 * 60 * 1000));
   const mins = Math.floor((diff % (60 * 60 * 1000)) / 60000);
-
-  let color = 'var(--success)';
-  let icon = '✓';
-  let label = 'Voimassa';
-
-  if (hours < 1)      { color = 'var(--error)';   icon = '⚠️'; label = 'Vanhenee pian!'; }
+  
+  let color = 'var(--success)', icon = '✓', label = 'Voimassa';
+  if (hours < 1) { color = 'var(--error)'; icon = '⚠️'; label = 'Vanhenee pian!'; }
   else if (hours < 3) { color = 'var(--warning)'; icon = '⏳'; label = 'Vanhenee'; }
 
   el.innerHTML = `
-    <div style="color:${color}; font-weight:700; margin-bottom:4px;">
-      ${icon} ${label} — ${hours} h ${mins} min
-    </div>
-    <div style="font-size:11.5px; color:var(--dim);">
-      Vanhenee: ${new Date(exp).toLocaleString('fi-FI')}
-    </div>
-    <div style="font-size:11px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
-      ${payload.preferred_username || payload.name || ''} · #${payload.employeeid || ''}
-    </div>`;
+    <div style="color:${color}; font-weight:700; margin-bottom:4px;">${icon} ${label} — ${hours} h ${mins} min</div>
+    <div style="font-size:11.5px; color:var(--dim);">Vanhenee: ${new Date(exp).toLocaleString('fi-FI')}</div>`;
 }
 window.updateTokenStatus = updateTokenStatus;
 
-/* REFRESH TOKEN STATUS */
 function updateRefreshTokenStatus() {
   const el = document.getElementById('refresh-token-status');
   const input = document.getElementById('skyplan_refresh_token_input');
   if (!el) return;
 
-  let rt = localStorage.getItem('skyplan_refresh_token');
-
-  if (!rt) {
-    rt = localStorage.getItem('skyplan_refresh_token_backup');
-    if (rt) {
-      try { localStorage.setItem('skyplan_refresh_token', rt); } catch (e) {}
-    }
-  }
-
-  if (!rt) {
-    const fromInput = (input?.value || '').trim();
-    if (fromInput.length > 50) {
-      console.log('[Token] Palautetaan input-kentästä localStorageen');
-      try {
-        localStorage.setItem('skyplan_refresh_token', fromInput);
-        localStorage.setItem('skyplan_refresh_token_backup', fromInput);
-      } catch (e) {}
-      el.innerHTML = '<span style="color:var(--warning);">⚠️ Palautettu input-kentästä</span>';
-      return;
-    }
-    el.innerHTML = '<span style="color:var(--dim);">Ei refresh tokenia</span>';
-    return;
-  }
+  let rt = localStorage.getItem('skyplan_refresh_token') || localStorage.getItem('skyplan_refresh_token_backup');
+  if (!rt) { el.innerHTML = '<span style="color:var(--dim);">Ei refresh tokenia</span>'; return; }
 
   if (input && !input.value) input.value = rt;
-
   const payload = decodeJWT(rt);
-
-  if (!payload || !payload.exp) {
-    el.innerHTML = `
-      <div style="color:var(--success); font-weight:700;">✓ Tallennettu</div>
-      <div style="font-size:10.5px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
-        ${rt.slice(0, 30)}…${rt.slice(-10)}
-      </div>`;
-    return;
-  }
+  if (!payload || !payload.exp) { el.innerHTML = '<span style="color:var(--success);">✓ Tallennettu</span>'; return; }
 
   const exp = new Date(payload.exp * 1000);
-  const diff = exp - Date.now();
-  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
-  const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
-
+  const diff = exp.getTime() - Date.now();
+  
   if (diff <= 0) {
-    el.innerHTML = `
-      <div style="color:var(--error); font-weight:700;">⚠️ Refresh token vanhentunut</div>
-      <div style="font-size:11px; color:var(--dim); margin-top:4px;">
-        Vanheni: ${exp.toLocaleString('fi-FI')} — hae uusi Skyplanista
-      </div>`;
+    el.innerHTML = `<div style="color:var(--error); font-weight:700;">⚠️ Vanhentunut</div>`;
     return;
   }
 
+  const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
   const color = days < 3 ? 'var(--warning)' : 'var(--success)';
-  const icon = days < 3 ? '⏳' : '✓';
 
   el.innerHTML = `
-    <div style="color:${color}; font-weight:700;">
-      ${icon} Voimassa ${days} pv ${hours} h
-    </div>
-    <div style="font-size:11px; color:var(--dim); margin-top:4px;">
-      Vanhenee: ${exp.toLocaleString('fi-FI')}
-    </div>
-    <div style="font-size:10.5px; color:var(--faint); margin-top:4px; font-family:var(--font-mono);">
-      ${rt.slice(0, 30)}…${rt.slice(-10)}
-    </div>`;
+    <div style="color:${color}; font-weight:700;">Voimassa ${days} pv ${hours} h</div>
+    <div style="font-size:11px; color:var(--dim); margin-top:4px;">Vanhenee: ${exp.toLocaleString('fi-FI')}</div>`;
 }
 window.updateRefreshTokenStatus = updateRefreshTokenStatus;
 
 function saveRefreshToken() {
   const input = document.getElementById('skyplan_refresh_token_input');
-  if (!input) return;
-  const t = (input.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
-  if (!t) { showToast('Anna refresh token.', 'warning'); return; }
-  if (t.length < 50) { showToast('Refresh token näyttää liian lyhyeltä.', 'warning'); return; }
+  const t = (input?.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
+  if (t.length < 50) { showToast('Virheellinen token', 'warning'); return; }
   try {
     localStorage.setItem('skyplan_refresh_token', t);
     localStorage.setItem('skyplan_refresh_token_backup', t);
-    showToast('Refresh token tallennettu', 'success');
+    showToast('Tallennettu', 'success');
     updateRefreshTokenStatus();
-  } catch (e) {
-    showToast('Tallennus epäonnistui.', 'error');
-  }
+  } catch (e) { showToast('Virhe tallennuksessa', 'error'); }
 }
 window.saveRefreshToken = saveRefreshToken;
 
 function clearRefreshToken() {
   if (!confirm('Poista refresh token?')) return;
-  try {
-    localStorage.removeItem('skyplan_refresh_token');
-    localStorage.removeItem('skyplan_refresh_token_backup');
-  } catch (e) {}
-  const input = document.getElementById('skyplan_refresh_token_input');
-  if (input) input.value = '';
+  localStorage.removeItem('skyplan_refresh_token');
+  localStorage.removeItem('skyplan_refresh_token_backup');
+  if (document.getElementById('skyplan_refresh_token_input')) document.getElementById('skyplan_refresh_token_input').value = '';
   updateRefreshTokenStatus();
   showToast('Poistettu.', 'info');
 }
 window.clearRefreshToken = clearRefreshToken;
 
-/* CERTIFICATION-ALLEKIRJOITUS */
-function updateCertSigStatus() {
-  const el = document.getElementById('cert-sig-status');
-  if (!el) return;
-
-  const saved = (typeof getCertificationSignature === 'function')
-    ? getCertificationSignature()
-    : null;
-
-  if (!saved) {
-    el.innerHTML = '<span style="color:var(--dim);">Ei tallennettua allekirjoitusta</span>';
-    return;
-  }
-
-  const when = new Date(saved.savedAt).toLocaleString('fi-FI');
-  el.innerHTML = `
-    <span style="color:var(--success);">✓ Allekirjoitus tallessa</span>
-    · ${when}
-    ${saved.license ? `· <span class="mono">${saved.license}</span>` : ''}`;
-}
-window.updateCertSigStatus = updateCertSigStatus;
-
 /* SETTINGS HYDRATION */
 function hydrateSettingsTab() {
   const tokenInput = document.getElementById('skyplan_token');
-  if (tokenInput && !tokenInput.value) {
-    tokenInput.value = localStorage.getItem('skyplan_token') || '';
-  }
+  if (tokenInput && !tokenInput.value) tokenInput.value = localStorage.getItem('skyplan_token') || '';
 
   try {
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-    const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-    set('cache-roster-stat', `${Array.isArray(roster) ? roster.length : 0} lentoa`);
-    set('settings-version', window.APP_VERSION || '–');
-    set('settings-build', window.APP_BUILD || '–');
+    document.getElementById('cache-roster-stat').textContent = `${Array.isArray(roster) ? roster.length : 0} lentoa`;
+    document.getElementById('settings-version').textContent = window.APP_VERSION || '–';
+    document.getElementById('settings-build').textContent = window.APP_BUILD || '–';
   } catch (e) {}
 
   if (typeof updateCertSigStatus === 'function') updateCertSigStatus();
-  if (typeof updateTokenStatus === 'function') updateTokenStatus();
-  if (typeof updateRefreshTokenStatus === 'function') updateRefreshTokenStatus();
+  updateTokenStatus();
+  updateRefreshTokenStatus();
   if (typeof renderMapFeaturesUI === 'function') renderMapFeaturesUI();
 }
 window.hydrateSettingsTab = hydrateSettingsTab;
 
 /* MAP FEATURES UI */
 const MAP_FEATURE_LABELS = {
-  stars:          { label: 'Tähtitaivas',            desc: 'Taustan tähdet' },
-  atmosphere:     { label: 'Atmosfääri-hehku',       desc: 'Pallon sininen reuna (blur)' },
-  timezones:      { label: 'Aikavyöhykeviivat',      desc: '15° välein' },
-  terminator:     { label: 'Päivä/yö-terminaattori', desc: 'Yöpuolen tummennus' },
-  cities:         { label: 'Kaupunkien yövalot',     desc: 'Keltaiset pisteet' },
-  waypoints:      { label: 'Waypoint-pisteet',       desc: 'Reitin varren pisteet' },
-  waypointLabels: { label: 'Waypoint-nimet',         desc: 'Näkyvät zoomatessa' },
-  airportNames:   { label: 'Kenttien nimet',         desc: 'ICAO:n alla' },
-  weatherMarkers: { label: 'Säämerkit',              desc: 'VFR/MVFR/IFR/LIFR' }
+  stars: { label: 'Tähtitaivas', desc: 'Taustan tähdet' },
+  atmosphere: { label: 'Atmosfääri-hehku', desc: 'Pallon sininen reuna (blur)' },
+  timezones: { label: 'Aikavyöhykeviivat', desc: '15° välein' },
+  terminator: { label: 'Päivä/yö-terminaattori', desc: 'Yöpuolen tummennus' },
+  cities: { label: 'Kaupunkien yövalot', desc: 'Keltaiset pisteet' },
+  waypoints: { label: 'Waypoint-pisteet', desc: 'Reitin varren pisteet' },
+  waypointLabels: { label: 'Waypoint-nimet', desc: 'Näkyvät zoomatessa' },
+  airportNames: { label: 'Kenttien nimet', desc: 'ICAO:n alla' },
+  weatherMarkers: { label: 'Säämerkit', desc: 'VFR/MVFR/IFR/LIFR' }
 };
 
 function renderMapFeaturesUI() {
@@ -768,11 +565,8 @@ function renderMapFeaturesUI() {
   if (!container) return;
   const features = (typeof getMapFeatures === 'function') ? getMapFeatures() : {};
   container.innerHTML = Object.entries(MAP_FEATURE_LABELS).map(([key, info]) => `
-    <label style="display:flex; align-items:center; gap:10px; padding:10px 12px;
-                  background:var(--input); border:1px solid var(--border); border-radius:8px;
-                  cursor:pointer; user-select:none;">
-      <input type="checkbox" data-feature="${key}" ${features[key] ? 'checked' : ''}
-             style="width:18px; height:18px; accent-color:var(--accent);">
+    <label style="display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--input); border:1px solid var(--border); border-radius:8px; cursor:pointer;">
+      <input type="checkbox" data-feature="${key}" ${features[key] ? 'checked' : ''} style="width:18px; height:18px; accent-color:var(--accent);">
       <span style="flex:1;">
         <span style="display:block; font-weight:600; color:var(--text); font-size:13px;">${info.label}</span>
         <span style="display:block; font-size:11px; color:var(--dim);">${info.desc}</span>
@@ -780,48 +574,38 @@ function renderMapFeaturesUI() {
     </label>
   `).join('');
 }
+window.renderMapFeaturesUI = renderMapFeaturesUI;
 
 function applyMapFeaturesUI() {
-  const inputs = document.querySelectorAll('[data-feature]');
   const features = {};
-  inputs.forEach(inp => { features[inp.dataset.feature] = inp.checked; });
+  document.querySelectorAll('[data-feature]').forEach(inp => features[inp.dataset.feature] = inp.checked);
   if (typeof setMapFeatures === 'function') setMapFeatures(features);
-  if (typeof showToast === 'function') showToast('Kartta-asetukset tallennettu.', 'success');
-  if (typeof renderHomeDashboard === 'function') {
-    renderHomeDashboard().catch(() => {});
-  }
+  showToast('Kartta-asetukset tallennettu.', 'success');
+  if (typeof renderHomeDashboard === 'function') renderHomeDashboard().catch(() => {});
 }
+window.applyMapFeaturesUI = applyMapFeaturesUI;
 
 function resetMapFeaturesUI() {
   if (typeof resetMapFeatures === 'function') resetMapFeatures();
   renderMapFeaturesUI();
-  if (typeof showToast === 'function') showToast('Palautettu oletuksiin.', 'info');
-  if (typeof renderHomeDashboard === 'function') {
-    renderHomeDashboard().catch(() => {});
-  }
+  showToast('Palautettu oletuksiin.', 'info');
+  if (typeof renderHomeDashboard === 'function') renderHomeDashboard().catch(() => {});
 }
-
-window.renderMapFeaturesUI = renderMapFeaturesUI;
-window.applyMapFeaturesUI = applyMapFeaturesUI;
 window.resetMapFeaturesUI = resetMapFeaturesUI;
 
 function saveTokenFromSettings() {
-  const input = document.getElementById('skyplan_token');
-  if (!input) return;
-  const t = (input.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
+  const t = (document.getElementById('skyplan_token')?.value || '').trim().replace(/^Bearer\s+/i, '').replace(/^"+|"+$/g, '');
   if (!t) { showToast('Anna kelvollinen token.', 'warning'); return; }
   try {
     localStorage.setItem('skyplan_token', t);
     showToast('Token tallennettu.', 'success');
     hydrateUser();
     updateTokenStatus();
-  } catch (e) {
-    showToast('Tokenin tallennus epäonnistui.', 'error');
-  }
+  } catch (e) { showToast('Tallennus epäonnistui.', 'error'); }
 }
 window.saveTokenFromSettings = saveTokenFromSettings;
 
-/* TOPBAR TOKEN VAROITUS */
+/* TOPBAR TOKEN VAROITUS (Matematiikkakorjaukset tehty) */
 function updateTopbarTokenWarning() {
   const el = document.getElementById('token-warning');
   const timeEl = document.getElementById('token-warning-time');
@@ -833,7 +617,7 @@ function updateTopbarTokenWarning() {
   const payload = decodeJWT(token);
   if (!payload?.exp) { el.style.display = 'none'; return; }
 
-  const diff = payload.exp * 1000 - Date.now();
+  const diff = (payload.exp * 1000) - Date.now();
 
   if (diff <= 0) {
     el.style.display = 'flex';
@@ -860,148 +644,90 @@ setInterval(() => {
 
 /* BOOT OVERLAY */
 const _boot = (() => {
-  const overlay = () => document.getElementById('boot-overlay');
-  const progressFill = () => document.getElementById('boot-progress-fill');
-  const stepsEl = () => document.getElementById('boot-steps');
-
   const TOTAL_STEPS = 5;
   let doneCount = 0;
 
   function setStep(name, state) {
-    const el = stepsEl()?.querySelector(`.boot-step[data-step="${name}"]`);
+    const el = document.getElementById('boot-steps')?.querySelector(`.boot-step[data-step="${name}"]`);
     if (!el) return;
     el.classList.remove('is-active', 'is-done', 'is-error');
     const icon = el.querySelector('.boot-step-icon');
-    if (state === 'active') {
-      el.classList.add('is-active');
-      if (icon) icon.textContent = '◌';
-    } else if (state === 'done') {
-      el.classList.add('is-done');
-      if (icon) icon.textContent = '✓';
+    
+    if (state === 'active') { el.classList.add('is-active'); if (icon) icon.textContent = '◌'; }
+    else if (state === 'done' || state === 'error') {
+      el.classList.add(state === 'done' ? 'is-done' : 'is-error');
+      if (icon) icon.textContent = state === 'done' ? '✓' : '!';
       doneCount++;
-      updateProgress();
-    } else if (state === 'error') {
-      el.classList.add('is-error');
-      if (icon) icon.textContent = '!';
-      doneCount++;
-      updateProgress();
+      const fill = document.getElementById('boot-progress-fill');
+      if (fill) fill.style.width = Math.min(100, Math.round((doneCount / TOTAL_STEPS) * 100)) + '%';
     }
   }
 
-  function updateProgress() {
-    const pct = Math.min(100, Math.round((doneCount / TOTAL_STEPS) * 100));
-    const fill = progressFill();
-    if (fill) fill.style.width = pct + '%';
-  }
-
-  function setSub(text) {
-    const el = document.querySelector('.boot-sub');
-    if (el) el.textContent = text;
-  }
-
   function hide() {
-    const el = overlay();
+    const el = document.getElementById('boot-overlay');
     if (!el) return;
-    const fill = progressFill();
+    const fill = document.getElementById('boot-progress-fill');
     if (fill) fill.style.width = '100%';
     setTimeout(() => el.classList.add('is-hidden'), 400);
     setTimeout(() => el.remove(), 1200);
   }
 
-  setTimeout(() => setStep('db', 'active'), 100);
-
-  return { setStep, setSub, hide };
+  return { setStep, setSub: (text) => { const el = document.querySelector('.boot-sub'); if (el) el.textContent = text; }, hide };
 })();
 window._boot = _boot;
 
 /* BOOT · DOMContentLoaded */
 document.addEventListener('DOMContentLoaded', async () => {
   const boot = window._boot;
+  const _bootSafety = setTimeout(() => boot?.hide(), 10000); // 10s fallback
 
-  const _bootSafety = setTimeout(() => {
-    console.warn('[Boot] Turvaverkko: pakotetaan overlay piiloon');
-    window._boot?.hide();
-  }, 10000);
-
-  // 1. IndexedDB init
+  // 1. IndexedDB
+  boot?.setStep('db', 'active');
   if (typeof dbInit === 'function') {
     try {
       await dbInit();
-      console.log('[Boot] IndexedDB valmis');
       if (typeof renderLogbookTable === 'function') renderLogbookTable();
       boot?.setStep('db', 'done');
-    } catch (e) {
-      console.error('[Boot] dbInit epäonnistui:', e);
-      boot?.setStep('db', 'error');
-    }
-  } else {
-    boot?.setStep('db', 'done');
-  }
+    } catch (e) { boot?.setStep('db', 'error'); }
+  } else { boot?.setStep('db', 'done'); }
 
   // 2. Käyttäjä
   boot?.setStep('user', 'active');
   boot?.setSub('Loading user profile…');
-  await new Promise(r => setTimeout(r, 100));
   hydrateUser();
   hydrateSettingsTab();
+  updateTopbarTokenWarning();
   boot?.setStep('user', 'done');
 
-  // 3. Token-varoitus
-  updateTopbarTokenWarning();
-
-  // 4. Lentokenttätietokanta — TAUSTALLA
+  // 3. Lentokenttätietokanta
   boot?.setStep('airports', 'active');
   boot?.setSub('Loading airports database…');
   if (typeof initAirportDB === 'function') {
-    initAirportDB()
-      .then(() => boot?.setStep('airports', 'done'))
-      .catch((e) => {
-        console.warn('[Boot] Airport DB epäonnistui:', e);
-        boot?.setStep('airports', 'error');
-      });
-  } else {
-    boot?.setStep('airports', 'done');
-  }
+    initAirportDB().then(() => boot?.setStep('airports', 'done')).catch(() => boot?.setStep('airports', 'error'));
+  } else { boot?.setStep('airports', 'done'); }
 
-  // 5. PDF.js worker
   if (typeof pdfjsLib !== 'undefined') {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   }
 
-  // 6. Roster
+  // 4. Roster
   boot?.setStep('roster', 'active');
   boot?.setSub('Fetching roster…');
   if (typeof autoLoadMonthRoster === 'function') {
     try {
-      await Promise.race([
-        autoLoadMonthRoster(),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))
-      ]);
+      await Promise.race([autoLoadMonthRoster(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
       boot?.setStep('roster', 'done');
-    } catch (e) {
-      console.warn('[Boot] Roster timeout tai virhe:', e.message);
-      boot?.setStep('roster', 'done');
-    }
-  } else {
-    boot?.setStep('roster', 'done');
-  }
+    } catch (e) { boot?.setStep('roster', 'done'); }
+  } else { boot?.setStep('roster', 'done'); }
 
-  // 7. Kotisivun kartta — TAUSTALLA
+  // 5. Kartta
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
   if (typeof _initHomeDashboard === 'function') {
-    _initHomeDashboard('boot')
-      .then(() => boot?.setStep('map', 'done'))
-      .catch((e) => {
-        console.warn('[Boot] Home dashboard epäonnistui:', e);
-        boot?.setStep('map', 'done');
-      });
-  } else {
-    boot?.setStep('map', 'done');
-  }
+    _initHomeDashboard('boot').then(() => boot?.setStep('map', 'done')).catch(() => boot?.setStep('map', 'done'));
+  } else { boot?.setStep('map', 'done'); }
 
-  // 8. Häivytys
+  // Häivytys
   clearTimeout(_bootSafety);
   boot?.setSub('Ready');
   setTimeout(() => boot?.hide(), 800);
