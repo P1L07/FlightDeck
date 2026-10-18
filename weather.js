@@ -1,17 +1,12 @@
 /* ==============================================================
- * WEATHER MODULE · METAR + TAF
- * Käyttää aviationweather.gov -rajapintaa (ilmainen, CORS sallittu)
+ * WEATHER MODULE · METAR + TAF + Home dashboard
  * ============================================================== */
 
 const WX_CACHE_KEY = 'wx_cache_v1';
-const WX_CACHE_TTL = 20 * 60 * 1000;   // 20 min
+const WX_CACHE_TTL = 20 * 60 * 1000;
 const WX_BASE      = 'https://aviationweather.gov/api/data';
+const WX_PROXY     = 'https://wx-proxy.janri-kallas.workers.dev';
 
-/* Cloudflare Worker -välityspalvelin
- * Vaihda tähän oma Worker-osoitteesi! */
-const WX_PROXY = 'https://wx-proxy.janri-kallas.workers.dev';
-
-/* Rakentaa välityspalvelimen kautta kulkevan URL:n */
 function _wxProxied(targetUrl) {
   return `${WX_PROXY}/?url=${encodeURIComponent(targetUrl)}`;
 }
@@ -20,9 +15,8 @@ let _ofpLoadFailed = {};
 
 /* ---------------- Cache ---------------- */
 function _wxCacheRead() {
-  try {
-    return JSON.parse(localStorage.getItem(WX_CACHE_KEY) || '{}') || {};
-  } catch (e) { return {}; }
+  try { return JSON.parse(localStorage.getItem(WX_CACHE_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
 }
 function _wxCacheWrite(cache) {
   try { localStorage.setItem(WX_CACHE_KEY, JSON.stringify(cache)); } catch (e) {}
@@ -37,7 +31,6 @@ function _wxCacheGet(key) {
 function _wxCacheSet(key, data) {
   const cache = _wxCacheRead();
   cache[key] = { t: Date.now(), data };
-  // Rajaa cache 200 entryyn
   const keys = Object.keys(cache);
   if (keys.length > 200) {
     keys.sort((a, b) => cache[a].t - cache[b].t)
@@ -47,13 +40,11 @@ function _wxCacheSet(key, data) {
   _wxCacheWrite(cache);
 }
 
-
 async function fetchMETAR(icao) {
   const key = `metar:${icao}`;
   const cached = _wxCacheGet(key);
   if (cached) return cached;
 
-  // 12 h ikkuna — kattaa harvemmin raportoivat kentät (mm. UAAA, Keski-Aasia)
   const target = `${WX_BASE}/metar?ids=${encodeURIComponent(icao)}&format=json&hours=12`;
   const resp = await fetch(_wxProxied(target));
   if (!resp.ok) throw new Error(`METAR HTTP ${resp.status}`);
@@ -87,9 +78,7 @@ function _fmtWind(wdir, wspd, wgst) {
 }
 
 function _fmtVis(visib, rawOb) {
-  // 1. Yritä parsia raw METARista (tarkin)
   if (rawOb) {
-    // ICAO-metriformaatti: 4-numeroinen metreinä
     const mMetric = rawOb.match(/\s(\d{4})\s/);
     if (mMetric) {
       const m = parseInt(mMetric[1], 10);
@@ -98,7 +87,6 @@ function _fmtVis(visib, rawOb) {
       if (m < 1000)   return `${m} m`;
       return `${(m / 1000).toFixed(1)} km`;
     }
-    // US-formaatti: "10SM", "1 1/2SM", "1/2SM"
     const mUS = rawOb.match(/\s(\d+(?:\s\d\/\d)?|\d\/\d)SM\s/);
     if (mUS) {
       const s = mUS[1].replace(/\s/g, '');
@@ -112,15 +100,11 @@ function _fmtVis(visib, rawOb) {
       return `${(sm * 1.609).toFixed(1)} km`;
     }
   }
-
-  // 2. Fallback: tulkitse visib-kenttä
   if (visib == null || visib === '') return '–';
   const n = parseFloat(visib);
   if (isNaN(n)) return String(visib);
   if (n >= 10) return '10+ km';
-  // Yli 30 → todennäköisesti metrejä
   if (n > 30) return `${(n / 1000).toFixed(1)} km`;
-  // 0–30 → statute milejä
   return `${(n * 1.609).toFixed(1)} km`;
 }
 
@@ -129,18 +113,14 @@ function _fmtClouds(clouds) {
   if (typeof clouds === 'string') return clouds;
   if (!Array.isArray(clouds)) return '–';
   if (!clouds.length) return 'SKC';
-
   return clouds.map(c => {
     if (!c) return '';
     if (typeof c === 'string') return c;
     const cover = String(c.cover || c.amount || '').toUpperCase();
-    // base on joko jalkoina (numeerinen) tai merkkijonona
     let base = '';
     if (c.base != null) {
       const b = Number(c.base);
-      base = isFinite(b)
-        ? String(Math.round(b / 100)).padStart(3, '0')   // 5000 ft → "050"
-        : String(c.base);
+      base = isFinite(b) ? String(Math.round(b / 100)).padStart(3, '0') : String(c.base);
     }
     return `${cover}${base}`;
   }).filter(Boolean).join(' ');
@@ -200,10 +180,7 @@ function renderWeatherWidget(el, metar, taf) {
 
 function renderCompactWeatherWidget(el, metar) {
   if (!el) return;
-  if (!metar) {
-    el.innerHTML = `<div class="empty">Ei dataa</div>`;
-    return;
-  }
+  if (!metar) { el.innerHTML = `<div class="empty">Ei dataa</div>`; return; }
 
   const fltCat = metar.fltCat || '';
   const fltColor = {
@@ -217,14 +194,13 @@ function renderCompactWeatherWidget(el, metar) {
     <div class="wx-compact">
       <div class="wx-compact-head">
         <span class="wx-compact-icao">${metar.icaoId || ''}</span>
-        <span class="wx-compact-cat"
-              style="color:${fltColor}; border-color:${fltColor};">
+        <span class="wx-compact-cat" style="color:${fltColor}; border-color:${fltColor};">
           ${fltCat || '—'}
         </span>
       </div>
       <div class="wx-compact-grid">
         <div><span>Tuuli</span><b>${_fmtWind(metar.wdir, metar.wspd, metar.wgst)}</b></div>
-        <div><span>Näkyvyys</span><b>${_fmtVis(metar.visib)}</b></div>
+        <div><span>Näkyvyys</span><b>${_fmtVis(metar.visib, metar.rawOb)}</b></div>
         <div><span>Lämpötila</span><b>${_fmtTemp(metar.temp)}</b></div>
         <div><span>QNH</span><b>${metar.altim != null ? Math.round(metar.altim) + ' hPa' : '–'}</b></div>
       </div>
@@ -264,23 +240,12 @@ async function loadWeatherForStation() {
       (metar.rawOb ? `METAR ${icao}\n${metar.rawOb}\n\n` : '') +
       (taf && taf.rawTAF ? `TAF ${icao}\n${taf.rawTAF}\n\n` : '') +
       `Tuuli:     ${_fmtWind(metar.wdir, metar.wspd, metar.wgst)}\n` +
-      `Näkyvyys:  ${_fmtVis(metar.visib)}\n` +
+      `Näkyvyys:  ${_fmtVis(metar.visib, metar.rawOb)}\n` +
       `Lämpötila: ${_fmtTemp(metar.temp)}  (kastepiste ${_fmtTemp(metar.dewp)})\n` +
       `QNH:       ${metar.altim != null ? Math.round(metar.altim) + ' hPa' : '–'}\n` +
       `Pilvet:    ${_fmtClouds(metar.clouds)}\n` +
       `Luokka:    ${metar.fltCat || '–'}\n` +
       `Havainto:  ${metar.reportTime ? new Date(metar.reportTime).toLocaleString() : '–'}`;
-
-    if (notamOut) {
-      notamOut.innerHTML = `
-        <div style="padding:20px; text-align:center; color:var(--dim); font-size:13px;">
-          <div style="font-size:20px; margin-bottom:8px;">🛠</div>
-          NOTAM-integraatio tulossa myöhemmin.
-          <div style="font-size:11px; margin-top:6px; color:var(--faint);">
-            Syy: ilmaisten API-lähteiden kattavuus ei riitä Kazakstaniin.
-          </div>
-        </div>`;
-    }
 
     if (typeof showToast === 'function') showToast(`Sää haettu: ${icao}`, 'success');
   } catch (err) {
@@ -291,7 +256,7 @@ async function loadWeatherForStation() {
 window.loadWeatherForStation = loadWeatherForStation;
 
 /* ==============================================================
- * ETUSIVUN DASHBOARD · Nykyinen + seuraava lento + sää
+ * ETUSIVUN DASHBOARD
  * ============================================================== */
 
 function _homeFmtTime(iso) {
@@ -309,8 +274,8 @@ function _findCurrentAndNextFlights() {
   if (!Array.isArray(roster)) roster = [];
 
   const now = Date.now();
-  const WITH_GRACE_BEFORE = 30 * 60 * 1000;   // 30 min ennen STD:tä
-  const WITH_GRACE_AFTER  = 45 * 60 * 1000;   // 45 min STA:n jälkeen
+  const WITH_GRACE_BEFORE = 30 * 60 * 1000;
+  const WITH_GRACE_AFTER  = 45 * 60 * 1000;
 
   const withTimes = roster.map(f => {
     const std = new Date(f.StdLt || f.Std || 0).getTime();
@@ -326,106 +291,29 @@ function _findCurrentAndNextFlights() {
     .filter(x => x.std > now)
     .sort((a, b) => a.std - b.std)[0];
 
-  // Fallback: jos ei tulevaa/nykyistä, näytä viimeisin mennyt (offline-recovery)
   if (!current && !upcoming && withTimes.length) {
     const latestPast = withTimes.sort((a, b) => b.std - a.std)[0];
-    console.log('[Home] Fallback: käytetään viimeisintä lennoa', latestPast.f.FlightNumber);
     return { current: latestPast.f, next: null };
   }
 
   return { current: current?.f || null, next: upcoming?.f || null };
 }
 
-function _flightCardHTML(f, opts = {}) {
-  if (!f) return `<div class="empty">${opts.emptyText || 'Ei lentoa'}</div>`;
-
-  const carrier = String(f.CarrierCode || '').trim();
-  const fltNo = String(f.FlightNumber || '').trim();
-  const flightNum = (carrier && fltNo.startsWith(carrier)) ? fltNo : `${carrier}${fltNo}`;
-  const dep = String(f.DepartureStationIcaoCode || f.DepartureStationCode || 'XXXX').trim();
-  const arr = String(f.ArrivalStationIcaoCode   || f.ArrivalStationCode   || 'XXXX').trim();
-  const std = _homeFmtTime(f.StdLt || f.Std);
-  const sta = _homeFmtTime(f.StaLt || f.Sta);
-  const reg = String(f.RegistrationNumber || f.AircraftDescription || 'TBA').trim();
-  const fid = String(f.ID || f.id || f.FlightID || '');
-
-  const stand = (typeof extractStandNumber === 'function')
-    ? extractStandNumber(f, null)
-    : null;
-
-  // Countdown
-  const stdMs = new Date(f.StdLt || f.Std || 0).getTime();
-  const now = Date.now();
-  let countdownHtml = '';
-  if (stdMs > now) {
-    const diff = stdMs - now;
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    const timeStr = h > 0
-      ? `${h}h ${String(m).padStart(2,'0')}m`
-      : `${m} min`;
-    countdownHtml = `
-      <div class="fc-countdown">
-        <span class="fc-countdown-label">Lähtöön</span>
-        <span class="fc-countdown-value">${timeStr}</span>
-      </div>`;
-  }
-
-  return `
-    <div class="flight-card-inner">
-      <!-- Kartta / maapallo -->
-      <div id="fc-map" class="fc-map"
-           data-dep="${dep}" data-arr="${arr}"
-           style="width:100%; height:220px;
-                  border-radius:12px;
-                  background:radial-gradient(ellipse at center,
-                             rgba(0,30,60,0.35) 0%, transparent 70%);
-                  overflow:hidden; margin-bottom:6px;
-                  position:relative;"></div>
-
-      <div class="fc-route-row">
-        <div class="fc-route">
-          <span class="fc-icao">${dep}</span>
-          <span class="fc-arrow">→</span>
-          <span class="fc-icao">${arr}</span>
-        </div>
-        <span class="fc-flt">${flightNum}</span>
-      </div>
-
-      <div class="fc-time-row">
-        <span class="fc-time">${std} → ${sta}</span>
-      </div>
-
-      <div class="fc-reg-row">
-        <span class="fc-reg fc-reg-clickable"
-              onclick="showDefectsPopup('${reg}')"
-              title="Näytä koneen viat">${reg}</span>
-        ${stand ? `<span class="fc-stand">STAND <b>${stand.value}</b></span>` : ''}
-      </div>
-
-      <div class="fc-fuel" id="fc-fuel-${fid}" data-flight-id="${fid}" style="display:none;">
-        <span class="fc-fuel-label">MIN BLOCK FUEL</span>
-        <span class="fc-fuel-value">–</span>
-      </div>
-
-      ${countdownHtml}
-    </div>`;
-}
-
 async function renderHomeDashboard() {
-  // Tyhjennä edellinen stand-päivitys-intervalli
+  // Tyhjennä edelliset intervallit
   if (window._standRefreshTimer) {
     clearInterval(window._standRefreshTimer);
     window._standRefreshTimer = null;
+  }
+  if (window._homeCountdownTimer) {
+    clearInterval(window._homeCountdownTimer);
+    window._homeCountdownTimer = null;
   }
 
   const { current, next } = _findCurrentAndNextFlights();
   const flight = current || next;
 
-  // Aktiivisen lennon kortti (säilyy)
-  if (typeof renderActiveFlightCard === 'function') {
-    renderActiveFlightCard().catch(() => {});
-  }
+  // HUOM: renderActiveFlightCard POISTETTU
 
   const cardEl = document.getElementById('home-map-card');
   const mapEl = document.getElementById('fc-map');
@@ -488,22 +376,20 @@ async function renderHomeDashboard() {
       <span class="hm-countdown-value">${countdownStr}</span>
     </div>` : ''}
   `;
-     // Auringonnousu/lasku DEP + DEST (#4) — kohdekentän paikallisessa ajassa
+
+  // Auringonnousu/lasku
   if (typeof SunCalc !== 'undefined') {
     const depCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(dep) : null;
     const arrCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(arr) : null;
-
-    // Karkea aikavyöhykearvio pituusasteesta (UTC ± tunnit)
     const approxTzOffset = (lon) => Math.round(lon / 15);
-
     const fmtInTz = (d, lon) => {
-      if (!d) return '–';
+      if (!d) return { time: '–', offset: 0 };
       const offset = approxTzOffset(lon);
-      // Muunna UTC-ms → kohdekentän paikallinen aika
       const shifted = new Date(d.getTime() + offset * 3600 * 1000);
-      const hh = String(shifted.getUTCHours()).padStart(2, '0');
-      const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
-      return { time: `${hh}:${mm}`, offset };
+      return {
+        time: `${String(shifted.getUTCHours()).padStart(2, '0')}:${String(shifted.getUTCMinutes()).padStart(2, '0')}`,
+        offset
+      };
     };
 
     const sunRows = [];
@@ -531,13 +417,12 @@ async function renderHomeDashboard() {
       overlayEl.insertAdjacentHTML('beforeend',
         `<div class="hm-info">${sunRows.join('')}</div>`);
     }
-  
   }
+
   overlayEl.style.display = 'flex';
 
-  // ============ Stand-päivitys automaattisesti jos online ============
+  // Stand-päivitys
   if (navigator.onLine && typeof refreshSingleFlightFromRoster === 'function') {
-    // Välitön päivitys
     (async () => {
       try {
         const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
@@ -546,12 +431,10 @@ async function renderHomeDashboard() {
           ? extractStandNumber(fresh, null) : null;
         const oldVal = stand ? stand.value : '';
         if (newStand && newStand.value && newStand.value !== oldVal) {
-          console.log('[Stand] Päivitetty:', oldVal || '(tyhjä)', '→', newStand.value);
           const valEl = document.getElementById('hm-stand-value');
           const itemEl = document.getElementById('hm-stand-item');
           if (valEl) valEl.textContent = newStand.value;
           if (itemEl) itemEl.style.display = '';
-          // Päivitä cached roster
           try {
             const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
             const idx = roster.findIndex(x =>
@@ -567,39 +450,30 @@ async function renderHomeDashboard() {
       }
     })();
 
-    // Ajoitettu päivitys — vain jos lento on aktiivinen
-    const stdMs = new Date(flight.StdLt || flight.Std || 0).getTime();
     const staMs = new Date(flight.StaLt || flight.Sta || 0).getTime();
-    const now = Date.now();
     const isActive = now >= stdMs - 30 * 60 * 1000 && now <= staMs + 30 * 60 * 1000;
-
     if (isActive) {
       window._standRefreshTimer = setInterval(async () => {
         if (!navigator.onLine) return;
         if (!document.querySelector('#tab-home.active')) return;
-
         try {
           const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
           if (!fresh) return;
           const newStand = (typeof extractStandNumber === 'function')
             ? extractStandNumber(fresh, null) : null;
           if (!newStand || !newStand.value) return;
-
           const valEl = document.getElementById('hm-stand-value');
           const itemEl = document.getElementById('hm-stand-item');
           if (valEl && valEl.textContent !== newStand.value) {
-            console.log('[Stand] Aikapäivitys:', valEl.textContent, '→', newStand.value);
             valEl.textContent = newStand.value;
             if (itemEl) itemEl.style.display = '';
           }
-        } catch (e) {
-          console.warn('[Stand] interval failed:', e);
-        }
+        } catch (e) {}
       }, 15 * 60 * 1000);
     }
   }
 
-   // ============ RENDERÖI KARTTA HETI (ilman OFP-dataa) ============
+  // ============ KRIITTINEN MUUTOS: Renderöi kartta HETI ============
   const mapOpts = {
     realistic: true,
     showTimezones: true,
@@ -613,19 +487,19 @@ async function renderHomeDashboard() {
       showAirportPopupInline(airport, { x: px, y: py }, cardEl, notamAirports);
     }
   };
+
   let notamAirports = [];
+  let extraAirports = [];
+  let waypointList = [];
+
   if (typeof renderFlightMap === 'function') {
     renderFlightMap(mapEl, dep, arr, mapOpts);
   }
 
   // ============ Lataa OFP-data TAUSTALLA ============
-  // Ei await — kartta on jo näkyvissä
-  let extraAirports = [];
-  let waypointList = [];
-
   (async () => {
     try {
-      if (typeof parseOFPsForNotams === 'function' && fid) {
+      if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
         const data = await parseOFPsForNotams(fid);
         if (typeof buildAirportData === 'function') {
           notamAirports = buildAirportData(data.notams, flight);
@@ -634,24 +508,27 @@ async function renderHomeDashboard() {
       }
     } catch (e) {
       const msg = String(e?.message || '');
-      if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
+      if (msg.includes('HTTP 422') || msg.includes('not generated')) {
+        _ofpLoadFailed[fid] = true;
+      } else {
         console.warn('[HomeMap] NOTAM parse failed:', e);
       }
     }
 
     try {
-      if (typeof parseOFPsForWaypoints === 'function' && fid) {
+      if (typeof parseOFPsForWaypoints === 'function' && fid && !_ofpLoadFailed[fid]) {
         const wpData = await parseOFPsForWaypoints(fid);
         waypointList = wpData.waypoints || [];
       }
     } catch (e) {
       const msg = String(e?.message || '');
-      if (!msg.includes('HTTP 422') && !msg.includes('not generated')) {
+      if (msg.includes('HTTP 422') || msg.includes('not generated')) {
+        _ofpLoadFailed[fid] = true;
+      } else {
         console.warn('[HomeMap] Waypoint parse failed:', e);
       }
     }
 
-    // Jos jotain saatiin, re-renderöi kartta
     if (waypointList.length > 0 || extraAirports.length > 0) {
       if (typeof renderFlightMap === 'function') {
         renderFlightMap(mapEl, dep, arr, {
@@ -666,7 +543,7 @@ async function renderHomeDashboard() {
     }
   })();
 
-  // DEP/DEST-nappien klikkaus → popup markerin kohdalle
+  // DEP/DEST-nappien klikkaus
   overlayEl.querySelectorAll('.hm-icao').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -679,28 +556,24 @@ async function renderHomeDashboard() {
     });
   });
 
-  // ============ Countdown-päivitys ============
-  if (window._homeCountdownTimer) clearInterval(window._homeCountdownTimer);
+  // Countdown
   const stdMsFinal = new Date(flight.StdLt || flight.Std || 0).getTime();
   window._homeCountdownTimer = setInterval(() => {
     const el = document.querySelector('.hm-countdown-value');
     if (!el) return;
     const diff = stdMsFinal - Date.now();
-    if (diff <= 0) {
-      el.textContent = 'LÄHTÖ';
-      return;
-    }
+    if (diff <= 0) { el.textContent = 'LÄHTÖ'; return; }
     const h = Math.floor(diff / 3600000);
     const m = Math.floor((diff % 3600000) / 60000);
     el.textContent = h > 0
       ? `${h}h ${String(m).padStart(2, '0')}m`
       : `${m} min`;
-  }, 30000);   // päivitä 30 s välein
+  }, 30000);
 }
 window.renderHomeDashboard = renderHomeDashboard;
 
 /* ==============================================================
- * Kartan sisäinen popup (DEP/DEST/ALTN/NOTAM)
+ * Kartan sisäinen popup
  * ============================================================== */
 async function showAirportPopupInline(airport, position, container, allAirports) {
   if (!airport || !container) return;
@@ -728,16 +601,11 @@ async function showAirportPopupInline(airport, position, container, allAirports)
     </div>
   `;
 
-  // ============ Sijoittelu ============
   const cw = container.clientWidth;
   const ch = container.clientHeight;
-
-  // ⬅ MUUTOS: turvamarginaalit topbarin ja tabbarin takia
-  const TOP_INSET    = 96;   // topbar + hieman ilmaa
-  const BOTTOM_INSET = 110;  // tabbar + hieman ilmaa
+  const TOP_INSET    = 96;
+  const BOTTOM_INSET = 110;
   const PAD          = 12;
-
-  // Sallittu pystyikkuna
   const minY = TOP_INSET;
   const maxY = ch - BOTTOM_INSET;
 
@@ -749,36 +617,23 @@ async function showAirportPopupInline(airport, position, container, allAirports)
   popup.style.top  = `${py}px`;
   container.appendChild(popup);
 
-  // ============ Sijoittelun hienosäätö ============
   requestAnimationFrame(() => {
     const pw = popup.offsetWidth;
     const ph = popup.offsetHeight;
-
-    // Oletus: 20px oikealle ja 20px ylös markerista
     let lx = px + 20;
     let ly = py - 20;
-
-    // Vaakasuuntainen rajaus
     if (lx + pw > cw - PAD) lx = px - pw - 20;
     if (lx < PAD)           lx = PAD;
     if (lx + pw > cw - PAD) lx = Math.max(PAD, cw - pw - PAD);
-
-    // ⬅ MUUTOS: pystysuuntainen rajaus huomioi topbarin ja tabbarin
-    const popupH = Math.min(ph, maxY - minY);   // jos popup on korkeampi kuin sallittu tila
+    const popupH = Math.min(ph, maxY - minY);
     if (ly + popupH > maxY) ly = maxY - popupH;
     if (ly < minY)          ly = minY;
-
     popup.style.left = `${lx}px`;
     popup.style.top  = `${ly}px`;
     popup.style.visibility = '';
-
-    // Jos popup ei mahdu kokonaan, rajaa korkeus ja salli sisäinen scroll
-    if (ph > maxY - minY) {
-      popup.style.maxHeight = `${maxY - minY}px`;
-    }
+    if (ph > maxY - minY) popup.style.maxHeight = `${maxY - minY}px`;
   });
 
-  // ============ Sulku ============
   const close = () => {
     popup.style.opacity = '0';
     setTimeout(() => popup.remove(), 180);
@@ -799,7 +654,6 @@ async function showAirportPopupInline(airport, position, container, allAirports)
     document.addEventListener('pointerdown', outsideHandler, true);
   }, 200);
 
-  // ============ Hae METAR + TAF ============
   let liveMetar = null;
   let liveTaf   = null;
   let isStale   = false;
@@ -815,7 +669,6 @@ async function showAirportPopupInline(airport, position, container, allAirports)
     console.warn('[InlinePopup] WX fetch failed:', e);
   }
 
-  // ============ Rakenna sisältö ============
   const body = popup.querySelector('.mip-body');
   if (!body) return;
 
@@ -830,11 +683,6 @@ async function showAirportPopupInline(airport, position, container, allAirports)
     const catColor = { VFR: 'var(--success)', MVFR: 'var(--accent)', IFR: 'var(--warning)', LIFR: 'var(--error)' }[fltCat] || 'var(--dim)';
     const fmtWind = (d, s, g) => d == null ? '–'
       : `${String(d).padStart(3, '0')}° / ${Math.round(s)}kt${g ? ' G' + Math.round(g) : ''}`;
-    const fmtVis = (v) => {
-      if (v == null || v === '') return '–';
-      const n = parseFloat(v);
-      return isNaN(n) ? String(v) : (n >= 10 ? '10+ km' : n + ' km');
-    };
 
     html += `
       <div class="notam-popup-section">
@@ -844,7 +692,7 @@ async function showAirportPopupInline(airport, position, container, allAirports)
         </div>
         <div class="notam-popup-grid">
           <div><span>Tuuli</span><b>${fmtWind(liveMetar.wdir, liveMetar.wspd, liveMetar.wgst)}</b></div>
-          <div><span>Näkyvyys</span><b>${fmtVis(liveMetar.visib)}</b></div>
+          <div><span>Näkyvyys</span><b>${_fmtVis(liveMetar.visib, liveMetar.rawOb)}</b></div>
           <div><span>Lämpötila</span><b>${liveMetar.temp != null ? Math.round(liveMetar.temp) + '°C' : '–'}</b></div>
           <div><span>QNH</span><b>${liveMetar.altim != null ? Math.round(liveMetar.altim) + ' hPa' : '–'}</b></div>
         </div>
@@ -867,13 +715,11 @@ async function showAirportPopupInline(airport, position, container, allAirports)
   if (airport.notams && airport.notams.length) {
     const order = { critical: 0, warning: 1, info: 2 };
     const sorted = [...airport.notams].sort((a, b) => order[a.severity] - order[b.severity]);
-
     html += `<div class="notam-popup-section">
       <div class="notam-popup-head">
         <span>NOTAMit</span>
         <span class="notam-popup-badge" style="color:var(--error); border-color:var(--error);">${airport.notams.length}</span>
       </div>`;
-
     sorted.forEach(n => {
       const sevColor = n.severity === 'critical' ? 'var(--error)'
                      : n.severity === 'warning' ? 'var(--warning)' : 'var(--accent)';
@@ -891,62 +737,41 @@ async function showAirportPopupInline(airport, position, container, allAirports)
 
   body.innerHTML = html;
 
-  // ============ Re-clamp sisällön latauduttua ============
-  // ⬅ MUUTOS: käytetään samoja insettejä kuin alkuvaiheessa
   requestAnimationFrame(() => {
     const pw = popup.offsetWidth;
     const ph = popup.offsetHeight;
-
     let lx = parseFloat(popup.style.left);
     let ly = parseFloat(popup.style.top);
-
-    // Vaakasuunta
     if (lx + pw > cw - PAD) lx = Math.max(PAD, px - pw - 20);
     if (lx < PAD)           lx = PAD;
-
-    // Pystysuunta huomioi topbarin ja tabbarin
     const popupH = Math.min(ph, maxY - minY);
     if (ly + popupH > maxY) ly = maxY - popupH;
     if (ly < minY)          ly = minY;
-
     popup.style.left = `${lx}px`;
     popup.style.top  = `${ly}px`;
-
-    if (ph > maxY - minY) {
-      popup.style.maxHeight = `${maxY - minY}px`;
-    }
+    if (ph > maxY - minY) popup.style.maxHeight = `${maxY - minY}px`;
   });
 }
 window.showAirportPopupInline = showAirportPopupInline;
 
-/* Apuri: etsi kenttä ICAOn perusteella */
 function _findAirportForIcao(icao, flight, extraAirports) {
   const dep = String(flight?.DepartureStationIcaoCode || '').toUpperCase();
   const arr = String(flight?.ArrivalStationIcaoCode || '').toUpperCase();
   if (icao === dep) {
-    return {
-      icao, role: 'DEP', notams: [],
-      coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
-    };
+    return { icao, role: 'DEP', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null };
   }
   if (icao === arr) {
-    return {
-      icao, role: 'DEST', notams: [],
-      coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
-    };
+    return { icao, role: 'DEST', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null };
   }
   return (extraAirports || []).find(a => a.icao === icao) || {
-    icao, role: 'NOTAM', notams: [],
-    coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
+    icao, role: 'NOTAM', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
   };
 }
 window._findAirportForIcao = _findAirportForIcao;
 
-/* --- Automaattinen päivitys kun avataan Home-tab tai palataan onlineen --- */
 /* ==============================================================
- * KOTISIVUN INIT · Itsepäinen ja itsediagnosoiva
+ * KOTISIVUN INIT
  * ============================================================== */
-
 async function _initHomeDashboard(reason = 'boot') {
   try {
     await renderHomeDashboard();
@@ -955,19 +780,16 @@ async function _initHomeDashboard(reason = 'boot') {
   }
 }
 
-// 1) Aja kun DOM on valmis (tai heti jos jo valmis)
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => setTimeout(() => _initHomeDashboard('DOM'), 900));
 } else {
   setTimeout(() => _initHomeDashboard('immediate'), 900);
 }
 
-// 2) Aja kun tullaan takaisin online
 window.addEventListener('online', () => {
   setTimeout(() => _initHomeDashboard('online'), 1500);
 });
 
-// 3) Aja kun klikataan Home-tab — vain jos kartta on tyhjä
 document.addEventListener('click', (ev) => {
   const btn = ev.target.closest('.tab-btn[data-tab="home"]');
   if (!btn) return;
@@ -979,8 +801,6 @@ document.addEventListener('click', (ev) => {
   }, 50);
 });
 
-// 4) Aja kun roster on synkattu (loadAssignedFlights wrapper)
-//    → käytetään MutationObserveria tarkkailemaan assigned-flights-container
 document.addEventListener('DOMContentLoaded', () => {
   const flightsContainer = document.getElementById('assigned-flights-container');
   if (!flightsContainer) return;
@@ -995,29 +815,21 @@ document.addEventListener('DOMContentLoaded', () => {
   obs.observe(flightsContainer, { childList: true, subtree: true });
 });
 
-
-// 5) Turvaverkko: vain jos kartta ei ole vielä piirtynyt
 setTimeout(() => {
   const mapEl = document.getElementById('fc-map');
   if (mapEl && !mapEl.querySelector('svg')) {
-    console.log('[Home] Turvaverkko: kartta ei piirtynyt, yritetään uudelleen');
     _initHomeDashboard('retry-fallback').catch(() => {});
   }
 }, 8000);
 
-/* ==============================================================
- * Täytä MIN BLOCK FUEL -kenttä kaikille korteille joiden
- * data-flight-id löytyy DOM:sta. Ajaa taustalla ei-blokkaavasti.
- * ============================================================== */
+/* Fuel-kenttä */
 async function _fillFuelForVisibleCards() {
   if (typeof getBlockFuelFromOFP !== 'function') return;
-
   const els = document.querySelectorAll('.fc-fuel[data-flight-id]');
   for (const el of els) {
     if (el.dataset.loaded === '1') continue;
     const fid = el.dataset.flightId;
     if (!fid) continue;
-
     try {
       const fuel = await getBlockFuelFromOFP(fid);
       if (fuel && fuel.minDisplay) {
@@ -1025,18 +837,12 @@ async function _fillFuelForVisibleCards() {
         el.style.display = '';
         el.dataset.loaded = '1';
       }
-    } catch (e) {
-      // Ohita hiljaisesti
-    }
+    } catch (e) {}
   }
 }
 window._fillFuelForVisibleCards = _fillFuelForVisibleCards;
 
-/* Kutsutaan renderHomeDashboard:in lopussa */
-
-/* ==============================================================
- * Kotisivu · Päivän lennot + tilastot
- * ============================================================== */
+/* Päivän lennot */
 function renderHomeDayFlights() {
   const container = document.getElementById('home-day-flights');
   if (!container) return;
@@ -1051,7 +857,6 @@ function renderHomeDayFlights() {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   })();
 
-  // Tämän päivän lennot
   const today = roster
     .filter(f => String(f.StdLt || f.Std || '').split('T')[0] === todayYMD)
     .sort((a, b) => new Date(a.StdLt || a.Std) - new Date(b.StdLt || b.Std));
@@ -1062,7 +867,7 @@ function renderHomeDayFlights() {
         <span class="hde-icon">🏖</span>
         <span class="hde-text">Ei lentoja tänään</span>
       </div>`;
-    updateHomeStats([], roster);
+    if (typeof updateHomeStats === 'function') updateHomeStats([], roster);
     return;
   }
 
@@ -1106,7 +911,6 @@ function renderHomeDayFlights() {
     `;
   }).join('');
 
-  updateHomeStats(today, roster);
+  if (typeof updateHomeStats === 'function') updateHomeStats(today, roster);
 }
 window.renderHomeDayFlights = renderHomeDayFlights;
-
