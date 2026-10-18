@@ -186,13 +186,15 @@ function _makeStars(width, height, count = 200) {
  * Gloobus, projektsioon, maapind ja lennumarsruut
  * ============================================================== */
 
-async function renderFlightMap(
-  container,
-  depIcao,
-  arrIcao,
-  options = {}
-) {
+async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   if (!container || typeof d3 === 'undefined') return;
+
+  /* --- Render generation — aborttaa vanhentuneet renderit --- */
+  const __myGen = (container._renderGen = (container._renderGen || 0) + 1);
+
+  if (container.id === 'fc-map') {
+    window._homeRouteRendered = false;
+  }
 
   if (container._mapCleanup) {
     container._mapCleanup();
@@ -305,6 +307,7 @@ async function renderFlightMap(
   await new Promise(resolve => requestAnimationFrame(resolve));
 
   if (!container.isConnected) return;
+  if (container._renderGen !== __myGen) return;
 
   const width = container.clientWidth || 400;
   const height = container.clientHeight || 240;
@@ -488,6 +491,7 @@ async function renderFlightMap(
   const worldData = await _loadWorldData();
 
   if (!container.isConnected) return;
+  if (container._renderGen !== __myGen) return; 
 
   if (worldData && typeof topojson !== 'undefined') {
     const land = topojson.feature(
@@ -568,6 +572,23 @@ async function renderFlightMap(
         .attr('stroke-width', 1.5)
         .attr('filter', `url(#${glowId})`)
     );
+
+    /* --- Cache-tallennus + ready-lippu (vain home-kartalle) --- */
+        /* --- Cache-tallennus + ready-lippu (vain home-kartalle) --- */
+    if (container.id === 'fc-map' && container._renderGen === __myGen) {
+      window._homeRouteRendered = true;
+      try {
+        localStorage.setItem('home_route_cache_v1', JSON.stringify({
+          depIcao,
+          arrIcao,
+          options: {
+            waypoints: options.waypoints || []
+          },
+          savedAt: new Date().toISOString(),
+          validUntil: Date.now() + 6 * 60 * 60 * 1000
+        }));
+      } catch (e) {}
+    }
   }
 
 /* ===================== LENNujaamade MARKERID ===================== */
@@ -616,7 +637,7 @@ async function renderFlightMap(
       .attr('fill', color)
       .attr(
         'font-size',
-        mobile ? (main ? 20 : 16) : (main ? 26 : 22)
+        mobile ? (main ? 15 : 8) : (main ? 15 : 8)
       )
       .attr('font-family', 'monospace')
       .attr('font-weight', 'bold')
@@ -701,7 +722,7 @@ async function renderFlightMap(
       .attr('x', 6)
       .attr('y', 5)
       .attr('fill', '#fff')
-      .attr('font-size', mobile ? 13 : 18)
+      .attr('font-size', mobile ? 10 : 15)
       .attr('font-family', 'monospace')
       .attr('font-weight', 'bold')
       .attr('paint-order', 'stroke')
@@ -1091,6 +1112,57 @@ async function renderFlightMap(
 
 /* Tee funktsioon globaalselt kättesaadavaks. */
 window.renderFlightMap = renderFlightMap;
+
+/* ==============================================================
+ * HOME ROUTE CACHE + READY STATE
+ * ============================================================== */
+
+window._homeRouteRendered = false;
+
+/**
+ * Piirrä reitti cachesta (boot kutsuu tätä ennen renderHomeDashboardia).
+ * Palauttaa true jos cache osui ja renderöinti käynnistettiin.
+ * Renderöinti on asynkroninen — käytä waitForHomeRouteReady() odottaaksesi.
+ */
+window.renderHomeRouteFromCache = function () {
+  try {
+    const raw = localStorage.getItem('home_route_cache_v1');
+    if (!raw) return false;
+
+    const c = JSON.parse(raw);
+    if (!c?.depIcao || !c?.arrIcao) return false;
+    if (c.validUntil && c.validUntil < Date.now()) return false;
+
+    const container = document.getElementById('fc-map');
+    if (!container || !container.isConnected) return false;
+    if (typeof renderFlightMap !== 'function') return false;
+
+    console.log('[RouteCache] Rendering from cache:', c.depIcao, '→', c.arrIcao);
+
+    renderFlightMap(container, c.depIcao, c.arrIcao, c.options || {})
+      .catch(e => console.warn('[RouteCache] render failed:', e));
+
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+/**
+ * Odota että reitti on piirretty (boot käyttää tätä).
+ * Palauttaa true jos valmistui ajoissa, false jos timeout.
+ */
+window.waitForHomeRouteReady = function (timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      if (window._homeRouteRendered) return resolve(true);
+      if (Date.now() - start > timeoutMs) return resolve(false);
+      setTimeout(check, 100);
+    };
+    check();
+  });
+};
 
 /* ===================== SUURUSE MUUTMINE ===================== */
 

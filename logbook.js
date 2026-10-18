@@ -582,84 +582,62 @@ function mapJourneyLogToEntry(journeyLog, flightMeta, ownStaffId) {
 
   const isPIC = pic && me && String(pic.staffId) === String(me.staffId);
 
-  /* --- Yöaika --- */
-  const night = calculateNightTime(L.takeoff, L.touchdown, meta.depIcao, meta.arrIcao);
-  entry.operationalCondition = {
-    night: night.night || '',
-    ifr: blockToHHMM(L.blockTime)
-  };
+/* --- Yöaika --- */
+const night = calculateNightTime(L.takeoff, L.touchdown, meta.depIcao, meta.arrIcao);
+entry.operationalCondition = {
+  night: night.night || '',
+  ifr: blockToHHMM(L.blockTime)
+};
 
-  /* --- Kuka teki nousun / laskun --- */
-  const raw = L.raw || {};
-  const flightOps = raw.FlightOps || {};
-  const takeoffStaffId = flightOps.TakeOffCapStaffID ?? raw.TakeOffCapStaffID ?? 0;
-  const landingStaffId = flightOps.LandingCapStaffID ?? raw.LandingCapStaffID ?? 0;
+/* --- Kuka teki nousun / laskun --- */
+const raw = L.raw || {};
+const flightOps = raw.FlightOps || {};
+const takeoffStaffId = flightOps.TakeOffCapStaffID ?? raw.TakeOffCapStaffID ?? 0;
+const landingStaffId = flightOps.LandingCapStaffID ?? raw.LandingCapStaffID ?? 0;
 
-  const hasTakeoffData = takeoffStaffId && String(takeoffStaffId) !== '0';
-  const hasLandingData = landingStaffId && String(landingStaffId) !== '0';
+const hasTakeoffData = takeoffStaffId && String(takeoffStaffId) !== '0';
+const hasLandingData = landingStaffId && String(landingStaffId) !== '0';
 
-  const myId = ownStaffId ? String(ownStaffId) : null;
-  const iDidTakeoff = hasTakeoffData && myId && String(takeoffStaffId) === myId;
-  const iDidLanding = hasLandingData && myId && String(landingStaffId) === myId;
+const myId = ownStaffId ? String(ownStaffId) : null;
+const iDidTakeoff = hasTakeoffData && myId && String(takeoffStaffId) === myId;
+const iDidLanding = hasLandingData && myId && String(landingStaffId) === myId;
 
-  let creditTakeoff, creditLanding;
-  let takeoffPending = false;
-  let landingPending = false;
+/* EI OLETUKSIA: jos Skyplan ei toimita staff-ID:tä → 0/0 + pending */
+entry.takeoffs = hasTakeoffData
+  ? { day: iDidTakeoff && !night.nightTakeoff ? 1 : 0,
+      night: iDidTakeoff &&  night.nightTakeoff ? 1 : 0 }
+  : { day: 0, night: 0 };
 
-  if (hasTakeoffData) {
-    creditTakeoff = iDidTakeoff;
-  } else {
-    creditTakeoff = isPIC;
-    takeoffPending = true;
-  }
+entry.landings = hasLandingData
+  ? { day: iDidLanding && !night.nightLanding ? 1 : 0,
+      night: iDidLanding &&  night.nightLanding ? 1 : 0 }
+  : { day: 0, night: 0 };
 
-  if (hasLandingData) {
-    creditLanding = iDidLanding;
-  } else {
-    creditLanding = isPIC;
-    landingPending = true;
-  }
+const takeoffPending = !hasTakeoffData;
+const landingPending = !hasLandingData;
 
-  if (creditTakeoff) {
-    entry.takeoffs = {
-      day:   night.nightTakeoff ? 0 : 1,
-      night: night.nightTakeoff ? 1 : 0
-    };
-  } else {
-    entry.takeoffs = { day: 0, night: 0 };
-  }
+/* --- Pilot function --- */
+entry.pilotFunction = {
+  pic:     isPIC ? blockToHHMM(L.blockTime) : '',
+  copilot: !isPIC ? blockToHHMM(L.blockTime) : '',
+  dual: '', instructor: ''
+};
 
-  if (creditLanding) {
-    entry.landings = {
-      day:   night.nightLanding ? 0 : 1,
-      night: night.nightLanding ? 1 : 0
-    };
-  } else {
-    entry.landings = { day: 0, night: 0 };
-  }
+/* --- Metadata --- */
+entry.skyplan = {
+  flightId: L.flightId || meta.flightId || null,
+  flightNumber: L.flightNumber || meta.flightNumber || '',
+  importedAt: new Date().toISOString(),
+  atd: L.atd, ata: L.ata, takeoff: L.takeoff, touchdown: L.touchdown,
+  blockTime: L.blockTime, flightTime: L.flightTime,
+  takeoffPending,
+  landingPending,
+  takeoffStaffId: hasTakeoffData ? takeoffStaffId : null,
+  landingStaffId: hasLandingData ? landingStaffId : null,
+  lastCheckedAt: new Date().toISOString()
+};
 
-  /* --- Pilot function --- */
-  entry.pilotFunction = {
-    pic:     isPIC ? blockToHHMM(L.blockTime) : '',
-    copilot: !isPIC ? blockToHHMM(L.blockTime) : '',
-    dual: '', instructor: ''
-  };
-
-  /* --- Metadata --- */
-  entry.skyplan = {
-    flightId: L.flightId || meta.flightId || null,
-    flightNumber: L.flightNumber || meta.flightNumber || '',
-    importedAt: new Date().toISOString(),
-    atd: L.atd, ata: L.ata, takeoff: L.takeoff, touchdown: L.touchdown,
-    blockTime: L.blockTime, flightTime: L.flightTime,
-    takeoffPending,
-    landingPending,
-    takeoffStaffId: takeoffStaffId || null,
-    landingStaffId: landingStaffId || null,
-    lastCheckedAt: new Date().toISOString()
-  };
-
-  return entry;
+return entry;
 }
 window.mapJourneyLogToEntry = mapJourneyLogToEntry;
 
@@ -923,59 +901,144 @@ function showLogbookEntryDetail(id) {
   const row = (label, val) => `
     <div class="kv"><span>${esc(label)}</span><span>${esc(val) || '–'}</span></div>`;
 
+  const sectionTitle = (t) => `
+    <div style="font-size:10px; letter-spacing:1.5px; text-transform:uppercase;
+                color:var(--dim); font-weight:700; margin:10px 0 6px 0;">${t}</div>`;
+
+  const isPending = !!(e.skyplan?.takeoffPending || e.skyplan?.landingPending);
+  const tkIso = e.skyplan?.takeoff;
+  const ldIso = e.skyplan?.touchdown;
+  const tkHint = tkIso ? hhmmFromIso(tkIso) : null;
+  const ldHint = ldIso ? hhmmFromIso(ldIso) : null;
+  const tkNight = tkIso ? isNight(tkIso, e.departure?.place) : false;
+  const ldNight = ldIso ? isNight(ldIso, e.arrival?.place) : false;
+
+  const wasTk = (Number(e.takeoffs?.day || 0) + Number(e.takeoffs?.night || 0)) > 0;
+  const wasLd = (Number(e.landings?.day || 0) + Number(e.landings?.night || 0)) > 0;
+
+  const numInput = (id, val) => `
+    <input type="number" id="${id}" min="0" max="9"
+           value="${Number(val) || 0}"
+           style="width:52px; padding:5px 6px; border-radius:6px;
+                  background:var(--bg); color:var(--text);
+                  border:1px solid var(--border); font-family:var(--font-mono);
+                  font-size:12.5px; text-align:center;">`;
+
+  const checkboxRow = (id, checked, label, time, night, border) => `
+    <label style="display:flex; align-items:center; gap:10px; cursor:pointer;
+                  ${border ? 'margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--border);' : ''}">
+      <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}
+             style="width:18px; height:18px; accent-color:var(--accent);">
+      <div style="flex:1;">
+        <div style="font-weight:600; font-size:12.5px;">${label}</div>
+        <div style="font-size:11px; color:var(--dim); line-height:1.35;">
+          ${time} · ${night ? 'yö' : 'päivä'}
+          → <b style="color:var(--accent);">${night ? 'Night=1' : 'Day=1'}</b>
+        </div>
+      </div>
+    </label>`;
+
+  const numberRow = (dayId, nightId, dayVal, nightVal, label, border) => `
+    <div style="${border ? 'margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--border);' : ''}">
+      <div style="font-weight:600; font-size:12.5px; margin-bottom:4px;">${label}</div>
+      <div style="font-size:11px; color:var(--warning); margin-bottom:6px;">
+        ⚠ Skyplan ei antanut aikaa — syötä käsin
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <span style="font-size:12px;">Day</span>
+        ${numInput(dayId, dayVal)}
+        <span style="font-size:12px; margin-left:8px;">Night</span>
+        ${numInput(nightId, nightVal)}
+      </div>
+    </div>`;
+
+  const tkBlock = tkIso
+    ? checkboxRow('dtl-did-tk', wasTk, 'Tein takeoffin', tkHint, tkNight, true)
+    : numberRow('dtl-tk-day', 'dtl-tk-night',
+        e.takeoffs?.day || 0, e.takeoffs?.night || 0, 'Takeoffs', true);
+
+  const ldBlock = ldIso
+    ? checkboxRow('dtl-did-ld', wasLd, 'Tein laskun', ldHint, ldNight, false)
+    : numberRow('dtl-ld-day', 'dtl-ld-night',
+        e.landings?.day || 0, e.landings?.night || 0, 'Landings', false);
+
   const body = `
-    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 24px;">
-      <div>
-        ${row('1. Pvm', e.date)}
-        ${row('2. Lähtö', `${e.departure.place} ${e.departure.time}`)}
-        ${row('3. Saapuminen', `${e.arrival.place} ${e.arrival.time}`)}
-        ${row('4. Kone',
-          [e.aircraft.make, e.aircraft.model, e.aircraft.variant, e.aircraft.registration]
-            .filter(Boolean).join(' '))}
-        ${row('5. SE / ME',
-          `${e.singlePilot.se || '–'} / ${e.singlePilot.me || '–'}`)}
-        ${row('6. Multi-pilot', e.multiPilot)}
-        ${row('7. Kokonaislentoaika', e.totalTimeOfFlight)}
-      </div>
-      <div>
-        ${row('8. PIC', e.picName)}
-        ${row('9. Night / IFR',
-          `${e.operationalCondition.night || '–'} / ${e.operationalCondition.ifr || '–'}`)}
-        ${row('10. PIC / Co-pilot',
-          `${e.pilotFunction.pic || '–'} / ${e.pilotFunction.copilot || '–'}`)}
-        ${row('Takeoffs (D/N)', `${e.takeoffs.day} / ${e.takeoffs.night}`)}
-        ${row('Landings (D/N)', `${e.landings.day} / ${e.landings.night}`)}
-        ${row('11. FSTD', e.fstd.totalTime || '–')}
-        ${row('Allekirjoitettu', e.signedAt ? new Date(e.signedAt).toLocaleString() : '–')}
-        ${row('Lupakirja', e.licenseNumber || '–')}
-      </div>
-    </div>
-    ${e.remarks ? `
-      <div style="margin-top:14px;">
-        <div style="font-size:11px; letter-spacing:1.5px; color:var(--dim);
-                    text-transform:uppercase; font-weight:700; margin-bottom:6px;">
-          Remarks (sarake 12)
+    <div style="max-height:min(72vh, 600px); overflow-y:auto; padding-right:4px;">
+
+      ${sectionTitle('Lento')}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 20px;">
+        <div>
+          ${row('1. Pvm', e.date)}
+          ${row('2. Lähtö', `${e.departure?.place || ''} ${e.departure?.time || ''}`)}
+          ${row('3. Saapuminen', `${e.arrival?.place || ''} ${e.arrival?.time || ''}`)}
+          ${row('4. Kone',
+            [e.aircraft?.make, e.aircraft?.model, e.aircraft?.variant, e.aircraft?.registration]
+              .filter(Boolean).join(' '))}
         </div>
-        <div style="padding:12px; background:var(--input); border-radius:10px;
-            font-size:13px; line-height:1.5;">${esc(e.remarks)}</div>
-      </div>` : ''}
-    ${e.signatureDataUrl ? `
-      <div style="margin-top:14px;">
-        <div style="font-size:11px; letter-spacing:1.5px; color:var(--dim);
-                    text-transform:uppercase; font-weight:700; margin-bottom:6px;">
-          Pilot's signature
+        <div>
+          ${row('5. SE / ME', `${e.singlePilot?.se || '–'} / ${e.singlePilot?.me || '–'}`)}
+          ${row('6. Multi-pilot', e.multiPilot)}
+          ${row('7. Kokonaislentoaika', e.totalTimeOfFlight)}
+          ${row('8. PIC', e.picName)}
         </div>
+      </div>
+
+      ${sectionTitle('Olosuhteet & tehtävä')}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 20px;">
+        <div>
+          ${row('9. Night / IFR',
+            `${e.operationalCondition?.night || '–'} / ${e.operationalCondition?.ifr || '–'}`)}
+          ${row('Takeoffs (D/N)',
+            `${e.takeoffs?.day || 0} / ${e.takeoffs?.night || 0}`)}
+          ${row('Landings (D/N)',
+            `${e.landings?.day || 0} / ${e.landings?.night || 0}`)}
+        </div>
+        <div>
+          ${row('10. PIC / Co-pilot',
+            `${e.pilotFunction?.pic || '–'} / ${e.pilotFunction?.copilot || '–'}`)}
+          ${row('11. FSTD', e.fstd?.totalTime || '–')}
+          ${row('Lupakirja', e.licenseNumber || '–')}
+          ${row('Allekirjoitettu',
+            e.signedAt ? new Date(e.signedAt).toLocaleString() : '–')}
+        </div>
+      </div>
+
+      ${sectionTitle('Takeoffs & Landings')}
+      ${isPending ? `
+        <div style="font-size:11.5px; color:var(--warning); padding:8px 10px;
+                    background:rgba(255,179,0,0.08); border-radius:6px;
+                    border:1px solid rgba(255,179,0,0.25); line-height:1.45; margin-bottom:8px;">
+          ⏳ Odottaa vahvistusta — rastita mitä teit. Päivä/yö lasketaan aikaleimoista.
+        </div>
+      ` : ''}
+      <div style="padding:10px 12px; background:var(--input); border-radius:8px;
+                  border:1px solid var(--border);">
+        ${tkBlock}
+        ${ldBlock}
+      </div>
+
+      ${e.remarks ? `
+        ${sectionTitle('Remarks (sarake 12)')}
+        <div style="padding:10px 12px; background:var(--input); border-radius:8px;
+                    font-size:12.5px; line-height:1.5; white-space:pre-wrap;">${esc(e.remarks)}</div>
+      ` : ''}
+
+      ${e.signatureDataUrl ? `
+        ${sectionTitle("Pilot's signature")}
         <img src="${e.signatureDataUrl}"
-             style="max-width:100%; height:auto; background:#fff;
-                    border-radius:8px; padding:6px;"/>
-      </div>` : ''}
-    ${e.skyplan?.flightId ? `
-      <div style="margin-top:14px; text-align:right;">
-        <button class="btn-ghost" style="height:34px; padding:0 14px; font-size:12px;"
-          onclick="reimportLogbookEntry('${e.id}')">
-          ⟳ Päivitä journey-logista
-        </button>
-      </div>` : ''}
+             style="max-width:100%; height:auto; max-height:120px;
+                    background:#fff; border-radius:8px; padding:6px;"/>
+      ` : ''}
+
+      ${e.skyplan?.flightId ? `
+        <div style="margin-top:14px; text-align:right;">
+          <button class="btn-ghost" style="height:32px; padding:0 14px; font-size:12px;"
+            onclick="reimportLogbookEntry('${e.id}')">
+            ⟳ Päivitä journey-logista
+          </button>
+        </div>
+      ` : ''}
+    </div>
   `;
 
   createModal({
@@ -983,8 +1046,51 @@ function showLogbookEntryDetail(id) {
     icon: '📄',
     bodyHTML: body,
     confirmText: 'Sulje',
-    maxWidth: '760px',
-    compact: false
+    maxWidth: '720px',
+    compact: false,
+    onConfirm: () => {
+      // Lue lomake ennen sulkemista
+      const ent = getLogbookEntry(id);
+      if (!ent) return;
+
+      const clampNum = (elId) => Math.max(0,
+        Math.min(9, parseInt(document.getElementById(elId)?.value, 10) || 0));
+
+      const oldTk = JSON.stringify(ent.takeoffs || {});
+      const oldLd = JSON.stringify(ent.landings || {});
+
+      if (tkIso) {
+        const did = document.getElementById('dtl-did-tk')?.checked || false;
+        ent.takeoffs = did
+          ? (tkNight ? { day: 0, night: 1 } : { day: 1, night: 0 })
+          : { day: 0, night: 0 };
+      } else {
+        ent.takeoffs = { day: clampNum('dtl-tk-day'), night: clampNum('dtl-tk-night') };
+      }
+
+      if (ldIso) {
+        const did = document.getElementById('dtl-did-ld')?.checked || false;
+        ent.landings = did
+          ? (ldNight ? { day: 0, night: 1 } : { day: 1, night: 0 })
+          : { day: 0, night: 0 };
+      } else {
+        ent.landings = { day: clampNum('dtl-ld-day'), night: clampNum('dtl-ld-night') };
+      }
+
+      const changed = JSON.stringify(ent.takeoffs) !== oldTk
+                   || JSON.stringify(ent.landings) !== oldLd
+                   || isPending;
+
+      if (changed) {
+        if (ent.skyplan) {
+          ent.skyplan.takeoffPending = false;
+          ent.skyplan.landingPending = false;
+          ent.skyplan.manuallyConfirmedAt = new Date().toISOString();
+        }
+        saveLogbookEntry(ent);
+        if (typeof showToast === 'function') showToast('TO/LDG tallennettu.', 'success');
+      }
+    }
   });
 }
 window.showLogbookEntryDetail = showLogbookEntryDetail;
@@ -1017,68 +1123,148 @@ function promptLogbookSignature(entryId) {
   return new Promise((resolve) => {
     const savedLicense = getLicenseForPilot(entry.picName);
     const isSPIC = /SPIC/i.test(entry.remarks || '');
+    const isPending = !!(entry.skyplan?.takeoffPending || entry.skyplan?.landingPending);
+
+    const tkIso = entry.skyplan?.takeoff;
+    const ldIso = entry.skyplan?.touchdown;
+    const tkHint = tkIso ? hhmmFromIso(tkIso) : null;
+    const ldHint = ldIso ? hhmmFromIso(ldIso) : null;
+    const tkNight = tkIso ? isNight(tkIso, entry.departure?.place) : false;
+    const ldNight = ldIso ? isNight(ldIso, entry.arrival?.place)   : false;
+
+    const wasTk = (Number(entry.takeoffs?.day || 0) + Number(entry.takeoffs?.night || 0)) > 0;
+    const wasLd = (Number(entry.landings?.day || 0) + Number(entry.landings?.night || 0)) > 0;
+
+    const numInput = (id, val) => `
+      <input type="number" id="${id}" min="0" max="9"
+             value="${Number(val) || 0}"
+             style="width:52px; padding:5px 6px; border-radius:6px;
+                    background:var(--bg); color:var(--text);
+                    border:1px solid var(--border); font-family:var(--font-mono);
+                    font-size:12.5px; text-align:center;">`;
+
+    /* Aikaleima → checkbox + auto-laskettu päivä/yö */
+    const checkboxRow = (id, checked, label, time, night, border) => `
+      <label style="display:flex; align-items:center; gap:10px; cursor:pointer;
+                    ${border ? 'margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--border);' : ''}">
+        <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}
+               style="width:18px; height:18px; accent-color:var(--accent);">
+        <div style="flex:1;">
+          <div style="font-weight:600; font-size:12.5px;">${label}</div>
+          <div style="font-size:11px; color:var(--dim); line-height:1.35;">
+            ${time} · ${night ? 'yö' : 'päivä'}
+            → <b style="color:var(--accent);">${night ? 'Night=1' : 'Day=1'}</b>
+          </div>
+        </div>
+      </label>`;
+
+    /* Ei aikaleimaa → manuaaliset numerot (varalla) */
+    const numberRow = (dayId, nightId, dayVal, nightVal, label, border) => `
+      <div style="${border ? 'margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid var(--border);' : ''}">
+        <div style="font-weight:600; font-size:12.5px; margin-bottom:4px;">${label}</div>
+        <div style="font-size:11px; color:var(--warning); margin-bottom:6px;">
+          ⚠ Skyplan ei antanut aikaa — syötä käsin
+        </div>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <span style="font-size:12px;">Day</span>
+          ${numInput(dayId, dayVal)}
+          <span style="font-size:12px; margin-left:8px;">Night</span>
+          ${numInput(nightId, nightVal)}
+        </div>
+      </div>`;
+
+    const tkBlock = tkIso
+      ? checkboxRow('lb-did-tk', wasTk, 'Tein takeoffin', tkHint, tkNight, true)
+      : numberRow('lb-tk-day', 'lb-tk-night',
+          entry.takeoffs?.day || 0, entry.takeoffs?.night || 0, 'Takeoffs', true);
+
+    const ldBlock = ldIso
+      ? checkboxRow('lb-did-ld', wasLd, 'Tein laskun', ldHint, ldNight, false)
+      : numberRow('lb-ld-day', 'lb-ld-night',
+          entry.landings?.day || 0, entry.landings?.night || 0, 'Landings', false);
 
     const bodyHTML = `
-      <div style="display:flex; flex-direction:column; gap:14px;">
-        <div style="font-size:13px; color:var(--dim);">
-          <strong>${entry.skyplan?.flightNumber || ''}</strong> ·
-          ${entry.departure?.place || ''} → ${entry.arrival?.place || ''} ·
-          ${entry.date || ''} · ${entry.totalTimeOfFlight || ''}
+      <div style="max-height:min(72vh, 560px); overflow-y:auto; padding-right:4px;
+                  display:flex; flex-direction:column; gap:10px;">
+
+        <div style="font-size:12.5px; color:var(--dim); line-height:1.4;">
+          <strong style="color:var(--text);">${_esc(entry.skyplan?.flightNumber || '')}</strong>
+          · ${_esc(entry.departure?.place || '')} → ${_esc(entry.arrival?.place || '')}
+          · ${_esc(entry.date || '')} · ${_esc(entry.totalTimeOfFlight || '')}
+        </div>
+
+        ${isPending ? `
+          <div style="font-size:11.5px; color:var(--warning); padding:8px 10px;
+                      background:rgba(255,179,0,0.08); border-radius:6px;
+                      border:1px solid rgba(255,179,0,0.25); line-height:1.45;">
+            ⚠ Skyplan ei vahvistanut TO/LDG:tä. Rastita mitä teit — päivä/yö
+            lasketaan automaattisesti aikaleimoista.
+          </div>
+        ` : ''}
+
+        <div style="padding:10px 12px; background:var(--input); border-radius:8px;
+                    border:1px solid var(--border);">
+          ${tkBlock}
+          ${ldBlock}
         </div>
 
         <div>
-          <label style="display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:6px;">
+          <label style="display:block; font-size:11.5px; font-weight:600;
+                        color:var(--dim); margin-bottom:4px;">
             Pilot's license number
           </label>
           <input type="text" id="lb-license"
                  placeholder="esim. KZ-12345"
-                 value="${savedLicense || ''}"
-                 style="width:100%; padding:10px 12px; border-radius:8px;
+                 value="${_esc(savedLicense || '')}"
+                 style="width:100%; padding:8px 10px; border-radius:8px;
                         background:var(--input); color:var(--text);
                         border:1px solid var(--border); font-size:13px;
                         font-family:var(--font-mono); box-sizing:border-box;">
         </div>
 
-        <div id="lb-spic-box" style="padding:14px; border-radius:10px;
+        <div id="lb-spic-box" style="padding:10px 12px; border-radius:8px;
              background:${isSPIC ? 'rgba(0,194,255,0.08)' : 'var(--input)'};
              border:1px solid ${isSPIC ? 'var(--border-2)' : 'var(--border)'};
              transition:all 0.15s ease;">
-          <label style="display:flex; align-items:center; gap:12px; cursor:pointer; user-select:none;">
+          <label style="display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;">
             <input type="checkbox" id="lb-spic" ${isSPIC ? 'checked' : ''}
-                   style="width:20px; height:20px; accent-color:var(--accent); cursor:pointer;">
-            <span style="flex:1;">
-              <span style="display:block; font-weight:700; font-size:14px; color:var(--text); margin-bottom:2px;">
-                SPIC-lento
-              </span>
-              <span style="font-size:11.5px; color:var(--dim); line-height:1.4;">
-                Kirjaa lentoaika PIC-sarakkeeseen ja merkitsee remarks-kenttään "SPIC".
-                Kapteenin allekirjoitus tarvitaan.
+                   style="width:18px; height:18px; accent-color:var(--accent); cursor:pointer;">
+            <span style="flex:1; font-size:12.5px;">
+              <strong>SPIC-lento</strong>
+              <span style="display:block; font-size:11px; color:var(--dim);
+                           line-height:1.35; margin-top:2px;">
+                Lentoaika PIC-sarakkeeseen + "SPIC" remarks-kenttään.
               </span>
             </span>
           </label>
         </div>
 
         <div>
-          <label style="display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:6px;">
-            Remarks and endorsements (sarake 12)
+          <label style="display:block; font-size:11.5px; font-weight:600;
+                        color:var(--dim); margin-bottom:4px;">
+            Remarks (sarake 12)
           </label>
-          <textarea id="lb-remark" rows="3" placeholder="Valinnainen"
-              style="width:100%; padding:10px; border-radius:8px; background:var(--input);
-                     color:var(--text); border:1px solid var(--border); font-size:13px;
-                     box-sizing:border-box;">${entry.remarks || ''}</textarea>
+          <textarea id="lb-remark" rows="2" placeholder="Valinnainen"
+              style="width:100%; padding:8px 10px; border-radius:8px;
+                     background:var(--input); color:var(--text);
+                     border:1px solid var(--border); font-size:12.5px;
+                     box-sizing:border-box; resize:vertical;
+                     min-height:44px; max-height:100px;">${_esc(entry.remarks || '')}</textarea>
         </div>
 
         <div>
-          <label style="display:block; font-size:12px; font-weight:600; color:var(--dim); margin-bottom:6px;">
+          <label style="display:block; font-size:11.5px; font-weight:600;
+                        color:var(--dim); margin-bottom:4px;">
             Pilot's signature
           </label>
           <canvas id="lb-sig-pad" width="600" height="160"
-              style="width:100%; height:160px; background:#fff; border:1px solid var(--border);
-                     border-radius:8px; touch-action:none;"></canvas>
+              style="width:100%; height:120px; background:#fff;
+                     border:1px solid var(--border); border-radius:8px;
+                     touch-action:none;"></canvas>
           <button type="button" id="lb-sig-clear"
-              style="margin-top:6px; align-self:flex-end; font-size:11px; background:transparent;
-                     border:1px solid var(--border); color:var(--text); padding:4px 10px;
-                     border-radius:6px; cursor:pointer;">
+              style="margin-top:4px; align-self:flex-end; font-size:11px;
+                     background:transparent; border:1px solid var(--border);
+                     color:var(--text); padding:3px 10px; border-radius:6px; cursor:pointer;">
             Clear signature
           </button>
         </div>
@@ -1091,7 +1277,7 @@ function promptLogbookSignature(entryId) {
       bodyHTML,
       confirmText: 'Sign & Save',
       cancelText: 'Cancel',
-      maxWidth: '640px',
+      maxWidth: '560px',
       compact: true,
       onConfirm: async () => {
         const canvas = document.getElementById('lb-sig-pad');
@@ -1107,9 +1293,36 @@ function promptLogbookSignature(entryId) {
           return false;
         }
 
-        if (license && entry.picName) {
-          setLicenseForPilot(entry.picName, license);
+        const clampNum = (id) => Math.max(0,
+          Math.min(9, parseInt(document.getElementById(id)?.value, 10) || 0));
+
+        /* TO: auto-laskettu päivä/yö jos aikaleima, muuten manuaalinen */
+        if (tkIso) {
+          const did = document.getElementById('lb-did-tk')?.checked || false;
+          entry.takeoffs = did
+            ? (tkNight ? {day:0, night:1} : {day:1, night:0})
+            : {day:0, night:0};
+        } else {
+          entry.takeoffs = { day: clampNum('lb-tk-day'), night: clampNum('lb-tk-night') };
         }
+
+        /* LDG: sama */
+        if (ldIso) {
+          const did = document.getElementById('lb-did-ld')?.checked || false;
+          entry.landings = did
+            ? (ldNight ? {day:0, night:1} : {day:1, night:0})
+            : {day:0, night:0};
+        } else {
+          entry.landings = { day: clampNum('lb-ld-day'), night: clampNum('lb-ld-night') };
+        }
+
+        if (entry.skyplan?.takeoffPending || entry.skyplan?.landingPending) {
+          entry.skyplan.takeoffPending = false;
+          entry.skyplan.landingPending = false;
+          entry.skyplan.manuallyConfirmedAt = new Date().toISOString();
+        }
+
+        if (license && entry.picName) setLicenseForPilot(entry.picName, license);
 
         let finalRemarks = remark;
         if (spicChecked) {
@@ -1198,6 +1411,7 @@ function promptLogbookSignature(entryId) {
   });
 }
 window.promptLogbookSignature = promptLogbookSignature;
+
 
 /* ==============================================================
  * ALLEKIRJOITA KAIKKI · saman PIC:n lennot
@@ -1472,6 +1686,102 @@ async function _promptSignAllModal(data) {
     });
   });
 }
+
+/* ==============================================================
+ * MANUAL TO/LDG CONFIRMATION
+ * ==============================================================
+ * Skyplan ei palauta TakeOffCapStaffID / LandingCapStaffID -kenttiä
+ * koskaan. Pilotti vahvistaa käsin kuka teki nousun/laskun.
+ * Yöaika lasketaan SunCalcilla skyplan.takeoff / skyplan.touchdown
+ * -aikaleimoista.
+ * ============================================================== */
+async function promptTakeoffLandingConfirmation(entryId) {
+  const entry = getLogbookEntry(entryId);
+  if (!entry) return;
+
+  const tkIso = entry.skyplan?.takeoff;
+  const ldIso = entry.skyplan?.touchdown;
+
+  const tkIsNight = tkIso ? isNight(tkIso, entry.departure?.place) : false;
+  const ldIsNight = ldIso ? isNight(ldIso, entry.arrival?.place)   : false;
+
+  const tkTime = tkIso ? hhmmFromIso(tkIso) : '—';
+  const ldTime = ldIso ? hhmmFromIso(ldIso) : '—';
+
+  const bodyHTML = `
+    <div style="font-size:13px; color:var(--dim); margin-bottom:14px;">
+      <strong style="color:var(--text);">${_esc(entry.skyplan?.flightNumber || '')}</strong>
+      · ${_esc(entry.departure?.place || '')} → ${_esc(entry.arrival?.place || '')}
+      · ${_esc(entry.date || '')}
+    </div>
+
+    <div style="font-size:12px; color:var(--warning); padding:10px 12px;
+                background:rgba(255,179,0,0.08); border-radius:8px; margin-bottom:14px;">
+      ⚠ Skyplan ei palauttanut TO/LDG-vahvistusta. Kuittaa käsin.
+    </div>
+
+    <label style="display:flex; align-items:center; gap:12px; padding:12px;
+                  background:var(--input); border-radius:8px; margin-bottom:8px; cursor:pointer;">
+      <input type="checkbox" id="lb-confirm-tk"
+             style="width:20px; height:20px; accent-color:var(--accent); cursor:pointer;">
+      <span style="flex:1;">
+        <span style="display:block; font-weight:700;">Tein takeoffin</span>
+        <span style="font-size:11.5px; color:var(--dim);">
+          ${tkIso ? `aika ${tkTime} (${tkIsNight ? 'yö' : 'päivä'})` : 'ei takeoff-aikaa'}
+        </span>
+      </span>
+    </label>
+
+    <label style="display:flex; align-items:center; gap:12px; padding:12px;
+                  background:var(--input); border-radius:8px; cursor:pointer;">
+      <input type="checkbox" id="lb-confirm-ld"
+             style="width:20px; height:20px; accent-color:var(--accent); cursor:pointer;">
+      <span style="flex:1;">
+        <span style="display:block; font-weight:700;">Tein laskun</span>
+        <span style="font-size:11.5px; color:var(--dim);">
+          ${ldIso ? `aika ${ldTime} (${ldIsNight ? 'yö' : 'päivä'})` : 'ei touchdown-aikaa'}
+        </span>
+      </span>
+    </label>
+
+    <div style="font-size:11px; color:var(--faint); margin-top:12px;">
+      Rastittamaton = 0/0 (ei kreditointia). Yö/päivä lasketaan
+      SunCalcilla aikaleimoista, ei arvata.
+    </div>
+  `;
+
+  createModal({
+    title: 'Vahvista TO / LDG',
+    icon: '✋',
+    bodyHTML,
+    confirmText: 'Tallenna',
+    cancelText: 'Peruuta',
+    maxWidth: '520px',
+    compact: true,
+    onConfirm: () => {
+      const tk = document.getElementById('lb-confirm-tk')?.checked || false;
+      const ld = document.getElementById('lb-confirm-ld')?.checked || false;
+
+      entry.takeoffs = tk
+        ? { day: tkIsNight ? 0 : 1, night: tkIsNight ? 1 : 0 }
+        : { day: 0, night: 0 };
+      entry.landings = ld
+        ? { day: ldIsNight ? 0 : 1, night: ldIsNight ? 1 : 0 }
+        : { day: 0, night: 0 };
+
+      if (!entry.skyplan) entry.skyplan = {};
+      entry.skyplan.takeoffPending = false;
+      entry.skyplan.landingPending = false;
+      entry.skyplan.manuallyConfirmedAt = new Date().toISOString();
+
+      saveLogbookEntry(entry);
+      if (typeof showToast === 'function') {
+        showToast('TO/LDG vahvistettu.', 'success');
+      }
+    }
+  });
+}
+window.promptTakeoffLandingConfirmation = promptTakeoffLandingConfirmation;
 
 /* ==============================================================
  * PDF-GENEROINTI · EASA FCL.050
@@ -2474,70 +2784,78 @@ window.importLogbookJSON = importLogbookJSON;
  * ============================================================== */
 function showExportDialog() {
   const entries = getLogbookEntries();
-  if (!entries.length) {
-    if (typeof showToast === 'function') showToast('Ei kirjauksia vietäväksi.', 'warning');
-    return;
-  }
+  const signed  = entries.filter(e => e.hash).length;
+  const pending = entries.filter(e =>
+    e.skyplan?.takeoffPending || e.skyplan?.landingPending
+  ).length;
+  const hasEntries = entries.length > 0;
 
-  const signed = entries.filter(e => e.hash).length;
+  const item = (action, icon, title, desc, accent = null) => `
+    <button type="button" data-action="${action}"
+      style="display:flex; align-items:center; gap:12px; padding:11px 14px;
+             background:var(--input);
+             border:1px solid ${accent || 'var(--border)'};
+             border-radius:10px; color:var(--text); text-align:left;
+             cursor:pointer; transition:all 0.15s; width:100%;">
+      <span style="font-size:20px; line-height:1;">${icon}</span>
+      <span style="flex:1; min-width:0;">
+        <span style="display:block; font-weight:700; font-size:13.5px; margin-bottom:2px;">${title}</span>
+        <span style="font-size:11px; color:var(--dim); line-height:1.35;">${desc}</span>
+      </span>
+    </button>
+  `;
 
-  const body = `
-    <div style="font-size:13px; color:var(--dim); margin-bottom:16px;">
-      Lokikirjassa <b style="color:var(--text);">${entries.length}</b> kirjausta
-      (${signed} sinetöity).
-    </div>
+  const sectionTitle = (t) => `
+    <div style="font-size:10px; letter-spacing:1.5px; text-transform:uppercase;
+                color:var(--dim); font-weight:700; margin:12px 0 6px 4px;">${t}</div>
+  `;
 
-    <div style="display:flex; flex-direction:column; gap:10px;">
-      <button type="button" data-action="csv"
-        style="display:flex; align-items:center; gap:14px; padding:16px 18px;
-               background:var(--input); border:1px solid var(--border);
-               border-radius:12px; color:var(--text); text-align:left; cursor:pointer;
-               transition:all 0.15s;">
-        <span style="font-size:26px;">📊</span>
-        <span style="flex:1;">
-          <span style="display:block; font-weight:700; margin-bottom:2px;">CSV (Excel / Numbers)</span>
-          <span style="font-size:11.5px; color:var(--dim);">
-            Kaikki 12 saraketta + audit-metadata. Puolipiste-erotin, UTF-8 BOM.
-          </span>
-        </span>
-      </button>
+  const scrollBody = `
+    <div style="max-height:min(60vh, 480px); overflow-y:auto; padding-right:4px;
+                display:flex; flex-direction:column; gap:6px;">
 
-      <button type="button" data-action="json"
-        style="display:flex; align-items:center; gap:14px; padding:16px 18px;
-               background:var(--input); border:1px solid var(--border);
-               border-radius:12px; color:var(--text); text-align:left; cursor:pointer;
-               transition:all 0.15s;">
-        <span style="font-size:26px;">💾</span>
-        <span style="flex:1;">
-          <span style="display:block; font-weight:700; margin-bottom:2px;">JSON-varmuuskopio</span>
-          <span style="font-size:11.5px; color:var(--dim);">
-            Täysi palautus: allekirjoitukset, hash-ketju, audit-loki.
-          </span>
-        </span>
-      </button>
+      ${hasEntries ? `
+        <div style="font-size:12.5px; color:var(--dim); margin-bottom:2px;">
+          <b style="color:var(--text);">${entries.length}</b> kirjausta
+          · ${signed} sinetöity${pending
+            ? ` · <b style="color:var(--warning);">${pending} odottaa</b>`
+            : ''}
+        </div>
 
-      <button type="button" data-action="restore"
-        style="display:flex; align-items:center; gap:14px; padding:16px 18px;
-               background:var(--input); border:1px solid var(--border);
-               border-radius:12px; color:var(--text); text-align:left; cursor:pointer;
-               transition:all 0.15s;">
-        <span style="font-size:26px;">↺</span>
-        <span style="flex:1;">
-          <span style="display:block; font-weight:700; margin-bottom:2px;">Palauta varmuuskopiosta</span>
-          <span style="font-size:11.5px; color:var(--dim);">
-            JSON-tiedostosta. Korvaa nykyisen datan (autobackup otetaan).
-          </span>
-        </span>
-      </button>
+        ${sectionTitle('Allekirjoitus')}
+        ${item('sign-all', '✍️', 'Allekirjoita kaikki lennot',
+          'Valitse kapteeni ja allekirjoita kaikki avoimet lentonsa.')}
+
+        ${sectionTitle('Vienti')}
+        ${item('csv',  '📊', 'CSV (Excel / Numbers)',
+          'Kaikki 12 saraketta + audit-metadata.')}
+        ${item('json', '💾', 'JSON-varmuuskopio',
+          'Täysi palautus: allekirjoitukset, hash-ketju, audit-loki.')}
+        ${item('pdf',  '⎙',  'PDF (EASA FCL.050)',
+          'Lokikirja certification-allekirjoituksella.')}
+
+        ${sectionTitle('Tuonti')}
+      ` : `
+        <div style="font-size:12.5px; color:var(--dim); padding:12px; text-align:center;
+                    background:var(--input); border-radius:8px; margin-bottom:2px;">
+          Lokikirja on tyhjä. Tuo lentoja tai palauta varmuuskopiosta.
+        </div>
+        ${sectionTitle('Tuonti')}
+      `}
+      ${item('csv-import', '📥', 'Tuo CSV',
+        'Yhdistä tai korvaa nykyinen lokikirja CSV-tiedostosta.')}
+      ${item('restore', '↺', 'Palauta varmuuskopiosta',
+        'JSON-tiedostosta. Korvaa nykyisen datan.',
+        'rgba(255,179,0,0.3)')}
     </div>
   `;
 
   createModal({
-    title: 'Vie lokikirja',
-    icon: '⬇',
-    bodyHTML: body,
+    title: 'Toiminnot',
+    icon: '⚙',
+    bodyHTML: scrollBody,
     confirmText: 'Sulje',
-    maxWidth: '540px',
+    maxWidth: '520px',
     onConfirm: () => {}
   });
 
@@ -2548,14 +2866,20 @@ function showExportDialog() {
         const modal = btn.closest('div[style*="position: fixed"]');
         if (modal) modal.remove();
 
-        if (action === 'csv')     await exportLogbookCSV();
-        if (action === 'json')    await exportLogbookJSON();
-        if (action === 'restore') await importLogbookJSON();
+        switch (action) {
+          case 'sign-all':   await signAllFlightsForPilot();             break;
+          case 'csv':        await exportLogbookCSV();                   break;
+          case 'json':       await exportLogbookJSON();                  break;
+          case 'pdf':        await saveLogbookPDF(window._lbEntries || []); break;
+          case 'csv-import': await importLogbookFromCSV();               break;
+          case 'restore':    await importLogbookJSON();                  break;
+        }
       });
     });
   }, 30);
 }
 window.showExportDialog = showExportDialog;
+
 
 /* ==============================================================
  * CSV-TUONTI
@@ -3302,27 +3626,21 @@ function _compareLogbookEntryWithLog(entry, log) {
 
   if (log.atd) check('ATD', entry.departure?.time, hhmmFromIso(log.atd), 'departure.time');
   if (log.ata) check('ATA', entry.arrival?.time, hhmmFromIso(log.ata), 'arrival.time');
-
   if (log.blockTime) {
-    const newBlock = blockToHHMM(log.blockTime);
-    check('Total time', entry.totalTimeOfFlight, newBlock, 'totalTimeOfFlight');
+    check('Total time', entry.totalTimeOfFlight, blockToHHMM(log.blockTime), 'totalTimeOfFlight');
   }
-
   if (log.takeoff || log.atd) {
-    const newDate = yyyymmddFromIso(log.takeoff || log.atd);
-    check('Päivämäärä', entry.date, newDate, 'date');
+    check('Päivämäärä', entry.date, yyyymmddFromIso(log.takeoff || log.atd), 'date');
   }
 
   const crew = (typeof parseCrewFromJourneyLog === 'function')
     ? parseCrewFromJourneyLog(log) : null;
-  if (crew?.pic?.name) {
-    check('PIC', entry.picName, crew.pic.name, 'picName');
-  }
+  if (crew?.pic?.name) check('PIC', entry.picName, crew.pic.name, 'picName');
 
   const raw = log.raw || {};
-  const flightOps = raw.FlightOps || {};
-  const tkId = flightOps.TakeOffCapStaffID ?? raw.TakeOffCapStaffID ?? 0;
-  const ldId = flightOps.LandingCapStaffID ?? raw.LandingCapStaffID ?? 0;
+  const fo = raw.FlightOps || {};
+  const tkId = fo.TakeOffCapStaffID ?? raw.TakeOffCapStaffID ?? 0;
+  const ldId = fo.LandingCapStaffID ?? raw.LandingCapStaffID ?? 0;
 
   const hasTk = tkId && String(tkId) !== '0';
   const hasLd = ldId && String(ldId) !== '0';
@@ -3334,38 +3652,35 @@ function _compareLogbookEntryWithLog(entry, log) {
     myId = String(p.employeeid || p.EmployeeID || p.employeeId || p.nameid || p.sub || '');
   } catch (e) {}
 
-  if (hasTk && myId) {
+  /* Vahvista VAIN jos Skyplan toimitti oikean staff-ID:n. Muuten pysyy pending. */
+  if (entry.skyplan?.takeoffPending && hasTk && myId) {
     const myTk = String(tkId) === myId;
-    const curTkTotal = (Number(entry.takeoffs?.day) || 0) + (Number(entry.takeoffs?.night) || 0);
-    const newTkDay = myTk ? (log.takeoff && isNight(log.takeoff, entry.departure?.place) ? 0 : 1) : 0;
-    const newTkNight = myTk ? (log.takeoff && isNight(log.takeoff, entry.departure?.place) ? 1 : 0) : 0;
-
-    if (curTkTotal !== (myTk ? 1 : 0)) {
-      diffs.push({
-        label: 'Takeoff (vahvistus)',
-        field: 'takeoffCredit',
-        old: String(curTkTotal),
-        new: myTk ? '1' : '0',
-        newValues: { day: newTkDay, night: newTkNight }
-      });
-    }
+    const curD = Number(entry.takeoffs?.day)   || 0;
+    const curN = Number(entry.takeoffs?.night) || 0;
+    const tkIsNight = !!(log.takeoff && isNight(log.takeoff, entry.departure?.place));
+    const newD = myTk ? (tkIsNight ? 0 : 1) : 0;
+    const newN = myTk ? (tkIsNight ? 1 : 0) : 0;
+    diffs.push({
+      label: (curD === newD && curN === newN) ? 'Takeoff vahvistettu' : 'Takeoff',
+      field: 'takeoffCredit',
+      old: `${curD}/${curN}`, new: `${newD}/${newN}`,
+      newValues: { day: newD, night: newN }
+    });
   }
 
-  if (hasLd && myId) {
+  if (entry.skyplan?.landingPending && hasLd && myId) {
     const myLd = String(ldId) === myId;
-    const curLdTotal = (Number(entry.landings?.day) || 0) + (Number(entry.landings?.night) || 0);
-    const newLdDay = myLd ? (log.touchdown && isNight(log.touchdown, entry.arrival?.place) ? 0 : 1) : 0;
-    const newLdNight = myLd ? (log.touchdown && isNight(log.touchdown, entry.arrival?.place) ? 1 : 0) : 0;
-
-    if (curLdTotal !== (myLd ? 1 : 0)) {
-      diffs.push({
-        label: 'Landing (vahvistus)',
-        field: 'landingCredit',
-        old: String(curLdTotal),
-        new: myLd ? '1' : '0',
-        newValues: { day: newLdDay, night: newLdNight }
-      });
-    }
+    const curD = Number(entry.landings?.day)   || 0;
+    const curN = Number(entry.landings?.night) || 0;
+    const ldIsNight = !!(log.touchdown && isNight(log.touchdown, entry.arrival?.place));
+    const newD = myLd ? (ldIsNight ? 0 : 1) : 0;
+    const newN = myLd ? (ldIsNight ? 1 : 0) : 0;
+    diffs.push({
+      label: (curD === newD && curN === newN) ? 'Landing vahvistettu' : 'Landing',
+      field: 'landingCredit',
+      old: `${curD}/${curN}`, new: `${newD}/${newN}`,
+      newValues: { day: newD, night: newN }
+    });
   }
 
   return diffs;

@@ -542,7 +542,7 @@ async function renderHomeDashboard() {
 
   // Renderöi kartta HETI
   if (typeof renderFlightMap === 'function') {
-    renderFlightMap(mapEl, dep, arr, mapOpts);
+    await renderFlightMap(mapEl, dep, arr, mapOpts);
   }
 
   // Lataa OFP-data + WX taustalla
@@ -582,7 +582,7 @@ async function renderHomeDashboard() {
 
         showModalLoader(
           'Ladataan reittiä…',
-          `<strong>${flightNum}</strong> · ${dep} → ${arr}`
+          `${flightNum} · ${dep} → ${arr}`
         );
         loaderShown = true;
 

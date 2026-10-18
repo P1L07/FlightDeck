@@ -75,6 +75,8 @@
       <div class="boot-step" data-step="airports"><span class="boot-step-icon">○</span><span class="boot-step-label">Lentokenttätietokanta</span></div>
       <div class="boot-step" data-step="roster"><span class="boot-step-icon">○</span><span class="boot-step-label">Roster</span></div>
       <div class="boot-step" data-step="map"><span class="boot-step-icon">○</span><span class="boot-step-label">Kartta</span></div>
+      <div class="boot-step" data-step="route"><span class="boot-step-icon">○</span><span class="boot-step-label">Reitti</span>
+    </div>
     </div>
 
     <div class="boot-progress">
@@ -183,10 +185,7 @@
       <h2>Lokikirja <span class="muted">· EASA FCL.050</span></h2>
       <span id="chain-status" class="chain-status" style="display:none;"></span>
       <div class="section-actions">
-        <button class="btn-ghost" onclick="signAllFlightsForPilot()" title="Allekirjoita kaikki lennot samalla kapteenilla">✍️ Allekirjoita kaikki</button>
-        <button class="btn-ghost" onclick="importLogbookFromCSV()">📥 Tuo CSV</button>
-        <button class="btn-ghost" onclick="showExportDialog()">⬇ Vie</button>
-        <button class="btn-ghost" onclick="saveLogbookPDF(window._lbEntries || [])">⎙ Tallenna PDF</button>
+        <button class="btn-ghost" onclick="showExportDialog()" title="Lokikirjan toiminnot">⚙ Toiminnot</button>
       </div>
     </div>
     <div id="logbook-container" class="table-wrap">
@@ -644,7 +643,7 @@ setInterval(() => {
 
 /* BOOT OVERLAY */
 const _boot = (() => {
-  const TOTAL_STEPS = 5;
+  const TOTAL_STEPS = 6;
   let doneCount = 0;
 
   function setStep(name, state) {
@@ -726,6 +725,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (typeof _initHomeDashboard === 'function') {
     _initHomeDashboard('boot').then(() => boot?.setStep('map', 'done')).catch(() => boot?.setStep('map', 'done'));
   } else { boot?.setStep('map', 'done'); }
+
+  // 6. Reitti (cache-first + fresh)
+  boot?.setStep('route', 'active');
+  boot?.setSub('Preparing route…');
+  try {
+    // a) Piirrä cachesta heti (synkroninen, nopea)
+    if (typeof renderHomeRouteFromCache === 'function') {
+      renderHomeRouteFromCache();
+    }
+    // b) Odota tuore piirto max 3s
+    if (typeof waitForHomeRouteReady === 'function') {
+      await Promise.race([
+        waitForHomeRouteReady(),
+        new Promise(r => setTimeout(r, 3000))
+      ]);
+    }
+  } catch (e) {}
+  boot?.setStep('route', 'done');
 
   // Häivytys
   clearTimeout(_bootSafety);
