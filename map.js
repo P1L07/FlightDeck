@@ -713,10 +713,13 @@ if (width < 100 || height < 100) {
   let lastPanX = 0;
   let lastPanY = 0;
 
-  const onPointerDown = (e) => {
+    const onPointerDown = (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
+    container.setPointerCapture(e.pointerId); 
+    
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    
     if (activePointers.size === 1) {
       lastPanX = e.clientX;
       lastPanY = e.clientY;
@@ -809,6 +812,17 @@ if (width < 100 || height < 100) {
     }
   };
 
+  // Estä selaimen oma vieritys, zoomaus ja tekstin maalaus
+  container.style.touchAction = 'none';
+  container.style.userSelect = 'none';
+  container.style.webkitUserSelect = 'none';
+  container.style.webkitTouchCallout = 'none';
+
+  // iOS Safarin oman pinch-zoomin estäminen
+  const preventSafariGestures = (e) => e.preventDefault();
+  container.addEventListener('gesturestart', preventSafariGestures);
+  container.addEventListener('gesturechange', preventSafariGestures);
+
   container.addEventListener('pointerdown', onPointerDown);
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
@@ -818,15 +832,17 @@ if (width < 100 || height < 100) {
   container.addEventListener('keydown', onKeyDown);
   container.style.outline = 'none';
 
-    container._mapCleanup = () => {
+container._mapCleanup = () => {
     container.removeEventListener('pointerdown', onPointerDown);
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
     container.removeEventListener('wheel', onWheel);
     container.removeEventListener('keydown', onKeyDown);
+    
+    container.removeEventListener('gesturestart', preventSafariGestures);
+    container.removeEventListener('gesturechange', preventSafariGestures);
 
-    // Poista reset-nappi isäntäkortista
     try {
       if (resetBtn.parentElement) resetBtn.parentElement.removeChild(resetBtn);
     } catch (e) {}
@@ -903,8 +919,6 @@ if (width < 100 || height < 100) {
     arr: arrIcao,
     options: {
       ...options,
-      // Poista funktiot jotka viittaavat vanhaan DOMiin (cardEl, notamAirports)
-      // jotta resize ei käytä vanhentuneita viittauksia
       onMarkerClick: options.onMarkerClick
     }
   };
