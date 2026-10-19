@@ -555,7 +555,7 @@ async function renderHomeDashboard() {
      * -------------------------------------------------------- */
     let skipLoader = false;
     try {
-      const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v1') || '{}');
+      const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v2') || '{}');
       const wpHit = wpCache[fid];
       const wpFresh = wpHit && (Date.now() - new Date(wpHit.at).getTime()) < 60 * 60 * 1000;
 

@@ -205,3 +205,63 @@ function extractCoordFromString(str) {
   return null;
 }
 window.extractCoordFromString = extractCoordFromString;
+
+/* ==============================================================
+ * ROUTE EXTRACTION · DEST / ALTN ROUTE -merkkijonot
+ * ============================================================== */
+
+function extractRoutes(lines) {
+  if (!lines || !Array.isArray(lines)) return null;
+
+  const fullText = lines
+    .map(l => l.replace(/[\u200B-\u200D\uFEFF]/g, '').trim())
+    .join(' ');
+
+  const pick = (re) => {
+    const m = fullText.match(re);
+    return m && m[1] ? m[1].replace(/\s+/g, ' ').trim() : '';
+  };
+
+  return {
+    destRoute: pick(/\bDEST\s+ROUTE[:\s]+([\s\S]*?)(?=\bALTN\s*1?\s+ROUTE\b|\bALTN\s*2\s+ROUTE\b|\bFUEL\b|\bRMK\b|\bREMARKS?\b|$)/i),
+    altnRoute: pick(/\bALTN\s*1?\s+ROUTE[:\s]+([\s\S]*?)(?=\bALTN\s*2\s+ROUTE\b|\bFUEL\b|\bRMK\b|\bREMARKS?\b|$)/i),
+    altn2Route: pick(/\bALTN\s*2\s+ROUTE[:\s]+([\s\S]*?)(?=\bFUEL\b|\bRMK\b|\bREMARKS?\b|$)/i)
+  };
+}
+window.extractRoutes = extractRoutes;
+
+/* ==============================================================
+ * ROUTE TOKENIZER · DEST ROUTE → waypoint-nimien joukko
+ * ==============================================================
+ * Suodattaa pois:
+ *   - korkeudet (N0450F350, FL350)
+ *   - airways (A466, G3, UN123, L4)
+ *   - DCT, IF, VFR, IFR ja muut reittimodifioijat
+ * Jäljelle jäävät oikeat waypoint-nimet (WPT1, KODAP, UATE, …).
+ * ============================================================== */
+
+function parseRouteWaypointNames(routeString) {
+  const names = new Set();
+  if (!routeString) return names;
+
+  const tokens = String(routeString)
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const ALTITUDE = /^[NMF]?\d{3,5}(F\d{3})?$/;
+  const AIRWAY   = /^[A-Z]{1,2}\d{1,4}[A-Z]?$/;
+  const SKIP     = /^(DCT|IF|VFR|IFR|FL|SID|STAR|TO|VIA|DIR|NAT|PAC|OTS|XING|LEVEL|RNAV|RNP|NDB|VOR|ILS|DME)$/;
+
+  for (const tok of tokens) {
+    if (tok.length < 2) continue;
+    if (SKIP.test(tok)) continue;
+    if (ALTITUDE.test(tok)) continue;
+    if (AIRWAY.test(tok)) continue;
+    names.add(tok);
+  }
+
+  return names;
+}
+window.parseRouteWaypointNames = parseRouteWaypointNames;

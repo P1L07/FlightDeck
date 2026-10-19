@@ -378,7 +378,7 @@ window.buildAirportData = buildAirportData;
  *              totalMins, fob, rawTime, page, y_anchor }]
  * ============================================================== */
 
-const NOTAM_WP_CACHE_KEY = 'notam_wp_cache_v1';
+const NOTAM_WP_CACHE_KEY = 'notam_wp_cache_v2';
 const NOTAM_WP_CACHE_TTL = 60 * 60 * 1000; // 60 min
 
 async function parseWaypoints(page, pageNum) {
@@ -516,7 +516,7 @@ async function parseOFPsForWaypoints(flightId) {
   const fid = String(flightId || '');
   if (!fid) throw new Error('Ei Flight ID:tä');
 
-  // Waypoint-data cache
+  // Cache
   try {
     const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
     const hit = cache[fid];
@@ -525,21 +525,70 @@ async function parseOFPsForWaypoints(flightId) {
     }
   } catch (e) {}
 
-  // Hae PDF (jaettu cache)
   const entry = await _getPDFBytesForFlight(fid);
-  
-  // KORJAUS: Tehdään kopio datasta (.slice(0)), jotta pdf.js ei irrota alkuperäistä puskuria
+
   const bufferCopy = entry.bytes.slice ? entry.bytes.slice(0) : entry.bytes;
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(bufferCopy) }).promise;
 
   let waypoints = [];
+  let destRoute = '';
+
   try {
     waypoints = await parseAllWaypoints(pdf);
+
+    /* --- Hae DEST ROUTE tekstistä (sivut 1–3) --- */
+    if (typeof extractRoutes === 'function' && typeof getLinesFromPDFPage === 'function') {
+      const routeLines = [];
+      const pagesToCheck = Math.min(3, pdf.numPages);
+      for (let p = 1; p <= pagesToCheck; p++) {
+        try {
+          const page = await pdf.getPage(p);
+          const lines = await getLinesFromPDFPage(page);
+          routeLines.push(...lines);
+          if (lines.join(' ').match(/DEST\s+ROUTE/i)) break;
+        } catch (e) {}
+      }
+      if (routeLines.length) {
+        const routes = extractRoutes(routeLines);
+        destRoute = routes?.destRoute || '';
+      }
+    }
+
+    /* --- Suodata waypointit: vain DEST ROUTE -nimet --- */
+    if (!window.SHOW_ALL_WAYPOINTS && destRoute && waypoints.length) {
+      const routeNames = (typeof parseRouteWaypointNames === 'function')
+        ? parseRouteWaypointNames(destRoute)
+        : new Set();
+
+      if (routeNames.size > 0) {
+        const before = waypoints.length;
+        const removed = [];
+
+        waypoints = waypoints.filter(w => {
+          const name = String(w.name || '').toUpperCase();
+          if (!name) return false;
+          const keep = routeNames.has(name);
+          if (!keep) removed.push(name);
+          return keep;
+        });
+
+        console.log(
+          `[Waypoints] DEST ROUTE: ${before} → ${waypoints.length} ` +
+          `(poistettu ${removed.length} SID/STAR-pistettä: ${removed.join(', ')})`
+        );
+        console.log(`[Waypoints] DEST ROUTE -merkkijono: "${destRoute}"`);
+      }
+    }
   } finally {
     try { pdf.destroy(); } catch (e) {}
   }
 
-  const data = { flightId: fid, waypoints, at: new Date().toISOString() };
+  const data = {
+    flightId: fid,
+    waypoints,
+    destRoute,
+    at: new Date().toISOString()
+  };
 
   try {
     const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
