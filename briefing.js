@@ -515,34 +515,8 @@ function openBriefingOFP() {
     return;
   }
 
-  (async () => {
-    try {
-      if (typeof getValidSkyplanToken !== 'function') {
-        previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
-        return;
-      }
-      const token = await getValidSkyplanToken().catch(() => null);
-      if (!token) {
-        previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
-        return;
-      }
-
-      const v2Resp = await fetch(`https://kcskyplanapi.airastana.com/api/v2/flights/${flightId}/ofp`, { headers: { 'Authorization': `Bearer ${token}` } }).catch(() => null);
-
-      if (v2Resp && v2Resp.status === 422) {
-        if (typeof createModal === 'function') {
-          createModal({ title: 'OFP ei vielä saatavilla', icon: '✈', type: 'info', message: 'Lennon OFP:tä ei ole vielä generoitu. Dispatch julkaisee sen yleensä 12–24 h ennen lähtöä.', confirmText: 'OK', compact: true });
-        } else if (typeof showToast === 'function') {
-          showToast('OFP ei vielä saatavilla — yritä myöhemmin.', 'info', 4000);
-        }
-        return;
-      }
-
-      previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
-    } catch (e) {
-      previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
-    }
-  })();
+  // Avataan suoraan. app.js tarkistaa välimuistin ensin ja hoitaa 422-virheen.
+  previewOFPFromSkyplan(flightId, flightNum, dateStr, tail);
 }
 window.openBriefingOFP = openBriefingOFP;
 
@@ -653,7 +627,7 @@ async function _bfLoadNotamMap(flight, flightId) {
   }
 
   if (typeof renderNotamMap === 'function') {
-    await renderNotamMap(mapEl, valid);
+    await renderNotamMap(mapEl, valid, { flight });
   }
 
   if (valid.length && typeof _preloadWxForAirports === 'function') {
@@ -661,3 +635,77 @@ async function _bfLoadNotamMap(flight, flightId) {
   }
 }
 window._bfLoadNotamMap = _bfLoadNotamMap;
+
+async function forceRefreshBriefing() {
+  const f = _bfGetSelectedFlight();
+  if (!f) return;
+
+  const flightId = String(f.ID || f.id || f.FlightID || '');
+  const dep = String(f.DepartureStationIcaoCode || f.DepartureStationCode || '').toUpperCase();
+  const arr = String(f.ArrivalStationIcaoCode || f.ArrivalStationCode || '').toUpperCase();
+
+  if (typeof showToast === 'function') showToast('Haetaan tuoreet tiedot...', 'info');
+
+  // 1. Tyhjennä Sään välimuisti (pakottaa METAR/TAF hakemaan verkkopalvelimelta)
+  try {
+    const wxCache = JSON.parse(localStorage.getItem('wx_cache_v1') || '{}');
+    delete wxCache[`metar:${dep}`];
+    delete wxCache[`taf:${dep}`];
+    delete wxCache[`metar:${arr}`];
+    delete wxCache[`taf:${arr}`];
+    localStorage.setItem('wx_cache_v1', JSON.stringify(wxCache));
+
+    const nwx = JSON.parse(localStorage.getItem('notam_wx_cache_v2') || '{}');
+    delete nwx[dep];
+    delete nwx[arr];
+    localStorage.setItem('notam_wx_cache_v2', JSON.stringify(nwx));
+  } catch (e) {}
+
+  // 2. Tyhjennä OFP (PDF) välimuisti (mukaan lukien 422-tila)
+  if (typeof window._invalidatePDFCache === 'function') {
+    window._invalidatePDFCache(flightId);
+  }
+
+  // 3. Tyhjennä NOTAM-välimuisti (pakottaa parserin yrittämään uudelleen)
+  try {
+    const ofpCache = JSON.parse(localStorage.getItem('notam_ofp_cache_v3') || '{}');
+    delete ofpCache[flightId];
+    localStorage.setItem('notam_ofp_cache_v3', JSON.stringify(ofpCache));
+  } catch (e) {}
+
+  // 4. Tyhjennä Waypoint-välimuisti
+  try {
+    const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v3') || '{}');
+    delete wpCache[flightId];
+    localStorage.setItem('notam_wp_cache_v3', JSON.stringify(wpCache));
+  } catch (e) {}
+
+  // 5. Tyhjennä Miehistön välimuisti
+  try {
+    const jlCache = JSON.parse(localStorage.getItem('journey_log_cache') || '{}');
+    if (jlCache[flightId]) {
+      delete jlCache[flightId];
+      localStorage.setItem('journey_log_cache', JSON.stringify(jlCache));
+    }
+  } catch (e) {}
+
+  // 6. Pakota lennon perustietojen haku uudelleen (päivittää esim. standin)
+  if (typeof refreshSingleFlightFromRoster === 'function') {
+    try {
+      const fresh = await refreshSingleFlightFromRoster(flightId, f.StdLt || f.Std);
+      if (fresh) {
+        const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+        const idx = roster.findIndex(x => String(x.ID || x.id || x.FlightID) === flightId);
+        if (idx >= 0) {
+          roster[idx] = { ...roster[idx], ...fresh };
+          localStorage.setItem('assigned_flights_cache', JSON.stringify(roster));
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 7. Piirrä näkymä uudelleen puhtailla tiedoilla
+  await renderBriefing();
+  if (typeof showToast === 'function') showToast('Briefing päivitetty.', 'success');
+}
+window.forceRefreshBriefing = forceRefreshBriefing;

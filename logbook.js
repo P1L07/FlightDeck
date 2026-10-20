@@ -3398,7 +3398,6 @@ async function syncLogbookWithSkyplan(options = {}) {
     const limit = new Date(now.getFullYear(), now.getMonth() - maxLookbackMonths, 1);
     const limitStr = `${limit.getFullYear()}-${String(limit.getMonth() + 1).padStart(2, '0')}`;
     if (effectiveFrom < limitStr) {
-      console.log(`[Logbook Sync] Rajoitetaan ${effectiveFrom} → ${limitStr} (max ${maxLookbackMonths} kk)`);
       effectiveFrom = limitStr;
     }
   }
@@ -3467,11 +3466,10 @@ async function syncLogbookWithSkyplan(options = {}) {
     });
   }
 
-  console.log(`[Logbook Sync] Käsitellään ${monthsToProcess.length}/${allMonths.length} kuukautta (${effectiveFrom} → ${to})`);
 
   if (!monthsToProcess.length) {
     if (typeof showToast === 'function') {
-      showToast('Kaikki ajan tasalla — ei synkattavaa.', 'success', 4000);
+      showToast('Lokikirja ajan tasalla', 'success', 4000);
     }
     return { total: allEntries.length, processed: 0, changed: 0, skipped: 0, errors: 0 };
   }
@@ -3513,7 +3511,6 @@ async function syncLogbookWithSkyplan(options = {}) {
     if (needsRoster && empId) {
       try {
         roster = await _fetchRosterForMonth(token, empId, month);
-        console.log(`[Logbook Sync] ${month}: roster ${roster.length} lentoa`);
         
         // Jos API palautti 0 → älä yritä uudelleen samalle kuukaudelle
         if (roster.length === 0 && verbose) {
@@ -3578,21 +3575,15 @@ async function syncLogbookWithSkyplan(options = {}) {
   stats.changed = changes.length;
   stats.skipped = stats.processed - stats.changed;
 
-  console.log('[Logbook Sync] Valmis:', stats);
-  console.log(`[Logbook Sync] Yhdistetty rosterista: ${stats.matched} kirjausta`);
-  console.log(`[Logbook Sync] Journey-log haettu: ${stats.processed} kirjaukselle`);
-  console.log(`[Logbook Sync] Tarvitsee päivityksen: ${changes.length}`);
-
   if (changes.length === 0) {
     if (typeof showToast === 'function') {
-      showToast(`Kaikki ajan tasalla. Yhdistetty ${stats.matched} uuteen lentoon rosterista.`,
+      showToast(`Lisätty ${stats.matched} uutta lentoa lokikirjaan`,
         'success', 5000);
     }
     return stats;
   }
 
   if (verbose) {
-    console.log('[Logbook Sync] --- Muutokset ---');
     changes.forEach((c, i) => {
       const flt = c.entry.skyplan?.flightNumber || c.entry.date || '?';
       console.log(`  #${i + 1} ${flt} (${c.entry.date})`);

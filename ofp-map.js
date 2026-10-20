@@ -36,7 +36,7 @@ async function _nmLoadWorld() {
 /* ==============================================================
  * Renderöi kartta
  * ============================================================== */
-async function renderNotamMap(container, airports) {
+async function renderNotamMap(container, airports, options = {}) {
   if (!container) return;
 
   if (container._mapAnimation) cancelAnimationFrame(container._mapAnimation);
@@ -45,9 +45,18 @@ async function renderNotamMap(container, airports) {
 
   if (typeof d3 === 'undefined') return;
 
-  const valid = (airports || []).filter(a =>
+    const valid = (airports || []).filter(a =>
     a.coords && isFinite(a.coords.lat) && isFinite(a.coords.lon)
   );
+
+  /* --- Statusvärit: laske jos flight annettu --- */
+  if (options.flight && typeof _getAirportStatus === 'function') {
+    valid.forEach(a => {
+      if (!a._status) {
+        a._status = _getAirportStatus(a, options.flight);
+      }
+    });
+  }
 
   if (!valid.length) {
     container.innerHTML = `
@@ -260,12 +269,15 @@ async function renderNotamMap(container, airports) {
     if (!p || !isFinite(p[0]) || !isFinite(p[1])) return;
     if (!isVisible([airport.coords.lon, airport.coords.lat])) return;
 
-    const color = NOTAM_MAP_ROLE_COLORS[airport.role] || '#8ea0b8';
+    const color = (airport._status && airport._status.color)
+      ? airport._status.color
+      : (NOTAM_MAP_ROLE_COLORS[airport.role] || '#8ea0b8');
     const isMain = airport.role === 'DEP' || airport.role === 'DEST';
     const isAltn = airport.role === 'ALTN';
     const size = isMain ? 5 : isAltn ? 4.5 : 3.5;
     const notamCount = airport.notams.length;
-    const hasCritical = airport.notams.some(n => n.severity === 'critical');
+    const hasCritical = airport.notams.some(n => n.severity === 'critical')
+                     || (airport._status && airport._status.status === 'critical');
 
     // Hehku
     markersG.append('circle')
@@ -559,7 +571,7 @@ async function showAirportNotamModal(airport) {
           <div><span>Lämpötila</span><b>${liveMetar.temp != null ? Math.round(liveMetar.temp) + '°C' : '–'}</b></div>
           <div><span>Kastepiste</span><b>${liveMetar.dewp != null ? Math.round(liveMetar.dewp) + '°C' : '–'}</b></div>
           <div><span>QNH</span><b>${liveMetar.altim != null ? Math.round(liveMetar.altim) + ' hPa' : '–'}</b></div>
-          <div><span>Pilvet</span><b>${esc(liveMetar.clouds || '–')}</b></div>
+          <div><span>Pilvet</span><b>${typeof _fmtClouds === 'function' ? _fmtClouds(liveMetar.clouds) : esc(liveMetar.clouds || '–')}</b></div>
         </div>
         ${liveMetar.rawOb ? `<pre class="notam-popup-raw">${esc(liveMetar.rawOb)}</pre>` : ''}
       </div>`;

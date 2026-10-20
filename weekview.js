@@ -58,6 +58,32 @@ function _wvFmtTime(iso) {
   return s;
 }
 
+/* ---------------- Scroll to today ---------------- */
+function _wvScrollToToday(smooth = true) {
+  const flightsTab = document.getElementById('tab-flights');
+  if (!flightsTab || !flightsTab.classList.contains('active')) return;
+
+  const todayCard = document.querySelector('#week-view-container .wv-day.is-today');
+  if (!todayCard) return;
+
+  const topbarH = (document.querySelector('.topbar')?.offsetHeight) || 0;
+  const margin = 10;
+
+  const rect = todayCard.getBoundingClientRect();
+
+  // Jos kortti on jo kunnolla näkyvissä, ei scrollata
+  if (rect.top >= topbarH + margin && rect.bottom <= window.innerHeight - margin) {
+    return;
+  }
+
+  todayCard.style.scrollMarginTop = `${topbarH + margin}px`;
+  todayCard.scrollIntoView({
+    behavior: smooth ? 'smooth' : 'auto',
+    block: 'start'
+  });
+}
+window._wvScrollToToday = _wvScrollToToday;
+
 function _wvFlightMins(f) {
   const dur = Number(f?.DurationMinutes);
   if (!isNaN(dur) && dur > 0) return dur;
@@ -387,7 +413,9 @@ function weekViewNext() {
   return _wvSyncAndRender(d);
 }
 function weekViewToday() {
-  return _wvSyncAndRender(new Date());
+  const p = _wvSyncAndRender(new Date());
+  setTimeout(() => _wvScrollToToday(true), 150);
+  return p;
 }
 window.weekViewPrev  = weekViewPrev;
 window.weekViewNext  = weekViewNext;

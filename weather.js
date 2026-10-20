@@ -148,6 +148,11 @@ function _fmtClouds(clouds) {
   }).filter(Boolean).join(' ');
 }
 
+window._fmtVis = _fmtVis;
+window._fmtClouds = _fmtClouds;
+window._fmtTemp = _fmtTemp;
+window._fmtWind = _fmtWind;
+
 function _fmtTemp(t) {
   return t == null ? '–' : `${Math.round(t)}°C`;
 }
@@ -532,6 +537,7 @@ async function renderHomeDashboard() {
     lightMode: _isMobile,
     date: new Date(),
     margin: 20,
+    flight,
     onMarkerClick: (airport, evt) => {
       const rect = cardEl.getBoundingClientRect();
       const px = evt ? (evt.clientX - rect.left) : cardEl.clientWidth / 2;
@@ -555,7 +561,7 @@ async function renderHomeDashboard() {
      * -------------------------------------------------------- */
     let skipLoader = false;
     try {
-      const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v2') || '{}');
+      const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v3') || '{}');
       const wpHit = wpCache[fid];
       const wpFresh = wpHit && (Date.now() - new Date(wpHit.at).getTime()) < 60 * 60 * 1000;
 
@@ -595,15 +601,13 @@ async function renderHomeDashboard() {
     }
 
     try {
-      // 1. NOTAMit
+            // 1. NOTAMit — älä koskaan jätä notamAirportsia tyhjäksi
+      let notams = [];
       try {
         if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
           const data = await parseOFPsForNotams(fid);
           if (loadGen !== _homeLoadGen) return;
-          if (typeof buildAirportData === 'function') {
-            notamAirports = buildAirportData(data.notams, flight);
-            extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
-          }
+          notams = data.notams || [];
         }
       } catch (e) {
         const msg = String(e?.message || '');
@@ -617,7 +621,13 @@ async function renderHomeDashboard() {
         }
       }
 
-      // 2. Waypointit
+      // 2. Rakenna kenttälista AINA (DEP/DEST mukana vaikka NOTAMit puuttuisivat)
+      if (typeof buildAirportData === 'function') {
+        notamAirports = buildAirportData(notams, flight);
+        extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+      }
+
+      // 3. Waypointit
       try {
         if (typeof parseOFPsForWaypoints === 'function' && fid && !_ofpLoadFailed[fid]) {
           const wpData = await parseOFPsForWaypoints(fid);
@@ -636,7 +646,7 @@ async function renderHomeDashboard() {
         }
       }
 
-      // 3. Re-render waypointeilla
+      // 4. Re-render waypointeilla
       if (loadGen !== _homeLoadGen) return;
       if (waypointList.length > 0 || extraAirports.length > 0) {
         if (typeof renderFlightMap === 'function') {
@@ -648,7 +658,7 @@ async function renderHomeDashboard() {
         }
       }
 
-      // 4. WX-lataus + re-render
+      // 5. WX-lataus kaikille kentille (DEP/DEST mukaan lukien) + re-render
       if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
         try {
           await _preloadWxForAirports(notamAirports);
@@ -710,6 +720,14 @@ window.renderHomeDashboard = renderHomeDashboard;
  * ============================================================== */
 async function showAirportPopupInline(airport, position, container, allAirports) {
   if (!airport || !container) return;
+
+  /* --- Täydennä DEP/DEST puuttuvat NOTAMit --- */
+  if (allAirports && allAirports.length) {
+    const full = allAirports.find(a => a.icao === airport.icao);
+    if (full) {
+      airport = { ...airport, ...full, role: airport.role };
+    }
+  }
 
   const existing = container.querySelector('.map-inline-popup');
   if (existing) existing.remove();
@@ -827,7 +845,9 @@ async function showAirportPopupInline(airport, position, container, allAirports)
           <div><span>Tuuli</span><b>${fmtWind(liveMetar.wdir, liveMetar.wspd, liveMetar.wgst)}</b></div>
           <div><span>Näkyvyys</span><b>${_fmtVis(liveMetar.visib, liveMetar.rawOb)}</b></div>
           <div><span>Lämpötila</span><b>${liveMetar.temp != null ? Math.round(liveMetar.temp) + '°C' : '–'}</b></div>
+          <div><span>Kastepiste</span><b>${liveMetar.dewp != null ? Math.round(liveMetar.dewp) + '°C' : '–'}</b></div>
           <div><span>QNH</span><b>${liveMetar.altim != null ? Math.round(liveMetar.altim) + ' hPa' : '–'}</b></div>
+          <div><span>Pilvet</span><b>${_fmtClouds(liveMetar.clouds)}</b></div>
         </div>
         ${liveMetar.rawOb ? `<pre class="notam-popup-raw">${esc(liveMetar.rawOb)}</pre>` : ''}
       </div>`;
@@ -888,16 +908,24 @@ async function showAirportPopupInline(airport, position, container, allAirports)
 window.showAirportPopupInline = showAirportPopupInline;
 
 function _findAirportForIcao(icao, flight, extraAirports) {
+  // Etsi täydellinen kenttä ensin (DEP/DEST/ALTN/NOTAM)
+  const list = extraAirports || [];
+  const found = list.find(a => a.icao === icao);
+  if (found) return found;
+
+  // Fallback
   const dep = String(flight?.DepartureStationIcaoCode || '').toUpperCase();
   const arr = String(flight?.ArrivalStationIcaoCode || '').toUpperCase();
-  if (icao === dep) {
-    return { icao, role: 'DEP', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null };
-  }
-  if (icao === arr) {
-    return { icao, role: 'DEST', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null };
-  }
-  return (extraAirports || []).find(a => a.icao === icao) || {
-    icao, role: 'NOTAM', notams: [], coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
+
+  let role = 'NOTAM';
+  if (icao === dep) role = 'DEP';
+  else if (icao === arr) role = 'DEST';
+
+  return {
+    icao,
+    role,
+    notams: [],
+    coords: (typeof _icaoCoords === 'function') ? _icaoCoords(icao) : null
   };
 }
 window._findAirportForIcao = _findAirportForIcao;
@@ -907,12 +935,40 @@ window._findAirportForIcao = _findAirportForIcao;
  * ============================================================== */
 let _homeDashRunning = false;
 let _homeDashPending = false;
+let _boot422Cleared = false;
 
 async function _initHomeDashboard(reason = 'boot') {
   if (_homeDashRunning) {
     _homeDashPending = true;
     return;
   }
+
+  // Bootissa: tyhjennetään 422-merkinnät jotta OFP yritetään hakea uudelleen
+  if (!_boot422Cleared) {
+    _boot422Cleared = true;
+    try {
+      if (typeof window._clear422Cache === 'function') {
+        window._clear422Cache();
+      }
+      // Tyhjennä myös localStorage 422-merkinnät
+      for (const key of ['notam_ofp_cache_v3', 'notam_wp_cache_v3']) {
+        try {
+          const cache = JSON.parse(localStorage.getItem(key) || '{}');
+          let changed = false;
+          for (const fid of Object.keys(cache)) {
+            if (cache[fid]?.data?.is422) {
+              delete cache[fid];
+              changed = true;
+            }
+          }
+          if (changed) localStorage.setItem(key, JSON.stringify(cache));
+        } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('[Boot] 422-cache clear failed:', e);
+    }
+  }
+
   _homeDashRunning = true;
   try {
     await renderHomeDashboard();
@@ -922,7 +978,6 @@ async function _initHomeDashboard(reason = 'boot') {
     _homeDashRunning = false;
     if (_homeDashPending) {
       _homeDashPending = false;
-      // Aja yksi ylimääräinen kierros jos jokin laukaisin jäi odottamaan
       setTimeout(() => _initHomeDashboard(reason + '-queued'), 100);
     }
   }

@@ -182,6 +182,217 @@ function _makeStars(width, height, count = 200) {
 }
 
 /* ==============================================================
+ * AIRPORT STATUS · väri kentän tilan mukaan
+ * ============================================================== */
+
+const AIRPORT_STATUS_COLORS = {
+  ok:       '#32d74b',  // vihreä — VFR + auki
+  weak:     '#ffb300',  // keltainen — MVFR
+  critical: '#ff453a'   // punainen — kiinni tai IFR/LIFR
+};
+
+function _isAirportClosureNotam(notam) {
+  if (!notam || notam.severity !== 'critical') return false;
+  const type = String(notam.type || '').toUpperCase();
+  const text = String(notam.text || '').toUpperCase();
+
+  if (type === 'ARPT CLSD' || type === 'AD CLSD') return true;
+  if (/\b(?:AD|AERODROME|AIRPORT|ARPT|APRT)\s+(?:CLSD|CLOSED)\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function _isAirportClosedDuringFlight(airport, blockOff, blockOn) {
+  const notams = airport?.notams || [];
+  for (const n of notams) {
+    if (!_isAirportClosureNotam(n)) continue;
+
+    if (n.permanent) return true;
+
+    // Vain jos B/C on parsittu onnistuneesti, tarkistetaan aikaväli
+    if (n.validFrom && n.validTo) {
+      const flightStart = blockOff || Date.now();
+      // Fallback: jos STA puuttuu, oletetaan 4h lento
+      const flightEnd = blockOn || (flightStart + 4 * 60 * 60 * 1000);
+
+      if (n.validFrom <= flightEnd && n.validTo >= flightStart) {
+        return true;
+      }
+    }
+    // Jos päivämääriä ei saatu parsittua → ohitetaan (ei värjätä punaiseksi)
+  }
+  return false;
+}
+
+/* ==============================================================
+ * SÄÄN VAKAVUUDEN ARVIOINTI (METAR-pohjainen, metrinen)
+ * ============================================================== */
+
+function _getAirportStatus(airport, flight) {
+  if (!airport) return null;
+  const icao = String(airport.icao || '').toUpperCase();
+  if (!icao || icao.length !== 4) return null;
+
+  let blockOff = 0, blockOn = 0;
+  if (flight) {
+    blockOff = new Date(flight.StdLt || flight.Std || 0).getTime() || 0;
+    blockOn  = new Date(flight.StaLt || flight.Sta || 0).getTime() || blockOff;
+  }
+
+  // 1. Onko NOTAM sulkenut kentän?
+  if (_isAirportClosedDuringFlight(airport, blockOff, blockOn)) {
+    return { status: 'critical', reason: 'notam-closed', color: AIRPORT_STATUS_COLORS.critical };
+  }
+
+  // 2. Haetaan METAR-objekti välimuisteista
+  let metar = null;
+  if (airport.metar) metar = airport.metar;
+  if (!metar && airport.wx?.metar) metar = airport.wx.metar;
+  if (!metar && airport.weather?.metar) metar = airport.weather.metar;
+
+  if (!metar) {
+    const gl = [window._wxCache, window.wxCache, window._weatherCache];
+    for (const g of gl) {
+      if (!g) continue;
+      if (g[icao]?.metar) { metar = g[icao].metar; break; }
+      if (g[icao]?.fltCat) { metar = g[icao]; break; }
+      if (g[`metar:${icao}`]?.data) { metar = g[`metar:${icao}`].data; break; }
+    }
+  }
+  if (!metar) {
+    try {
+      const c = JSON.parse(localStorage.getItem('notam_wx_cache_v2') || '{}');
+      if (c[icao]?.metar) metar = c[icao].metar;
+    } catch (e) {}
+  }
+  if (!metar) {
+    try {
+      const c = JSON.parse(localStorage.getItem('wx_cache_v1') || '{}');
+      if (c[`metar:${icao}`]?.data) metar = c[`metar:${icao}`].data;
+    } catch (e) {}
+  }
+
+  // 3. Arvioi sään vakavuus
+  const severity = _evaluateWxSeverity(metar);
+  if (severity === 'critical') {
+    return { status: 'critical', reason: 'wx-minima', color: AIRPORT_STATUS_COLORS.critical };
+  }
+  if (severity === 'weak') {
+    return { status: 'weak', reason: 'wx-weak', color: AIRPORT_STATUS_COLORS.weak };
+  }
+  if (severity === 'ok') {
+    return { status: 'ok', reason: 'vfr', color: AIRPORT_STATUS_COLORS.ok };
+  }
+
+  return { status: 'unknown', reason: null, color: null };
+}
+window._getAirportStatus = _getAirportStatus;
+
+/* ==============================================================
+ * SÄÄN VAKAVUUDEN ARVIOINTI (METAR-pohjainen, metrinen)
+ * ============================================================== */
+function _evaluateWxSeverity(metar) {
+  if (!metar) return null;
+  
+  let isCritical = false;
+  let isWeak = false;
+  let visMeters = null;
+  let minCeilingFt = Infinity;
+
+  // 1. NÄKYVYYS (visib-kenttä)
+  if (metar.visib !== undefined && metar.visib !== null) {
+    const v = parseFloat(metar.visib);
+    if (!isNaN(v)) {
+      // Oletetaan metrit, jos arvo on iso (esim. 5000), tai jos arvo on pieni (0.5, 3) -> SM
+      if (v >= 50) visMeters = v;
+      else if (v < 50) visMeters = v * 1609.34;
+    }
+  }
+
+  // 2. RAW OB -tarkistukset (Näkyvyys, RVR)
+  if (metar.rawOb) {
+    const raw = metar.rawOb;
+    
+    // RVR: R24L/1200, R06/0550
+    const rvrMatches = [...raw.matchAll(/R\d{2}[LRC]?\/(\d{4})/g)];
+    for (const m of rvrMatches) {
+      const rvrM = parseInt(m[1], 10);
+      if (rvrM <= 1500) isCritical = true;
+      else if (rvrM < 5000) isWeak = true;
+    }
+
+    // Metrinen näkyvyys: 4 numeroa (esim. 1500, 9999)
+    const mMetric = raw.match(/\s(\d{4})\s/);
+    if (mMetric) {
+      const m = parseInt(mMetric[1], 10);
+      if (m === 9999) {
+        visMeters = 9999;
+      } else {
+        visMeters = m;
+      }
+    }
+  }
+
+  // Näkyvyyden tulkinta (jos saatiin selville)
+  if (visMeters !== null) {
+    if (visMeters <= 1500) isCritical = true;
+    else if (visMeters < 5000) isWeak = true;
+  }
+
+  // 3. PILVET / KATTO (BKN, OVC, VV)
+  let cloudsArray = metar.clouds;
+  if (typeof cloudsArray === 'string') {
+    // Muunnetaan "BKN005 OVC010" muotoon [{cover:'BKN', base: 500}, ...]
+    cloudsArray = [];
+    const matches = metar.clouds.match(/(BKN|OVC|VV)(\d{3})/g);
+    if (matches) {
+      for (const m of matches) {
+        cloudsArray.push({
+          cover: m.substring(0, 3),
+          base: parseInt(m.substring(3), 10) * 100
+        });
+      }
+    }
+  }
+
+  if (Array.isArray(cloudsArray)) {
+    for (const c of cloudsArray) {
+      if (!c) continue;
+      const cover = String(c.cover || c.amount || '').toUpperCase();
+      if (['BKN', 'OVC', 'VV'].includes(cover)) {
+        let baseFt = 0;
+        if (c.base != null) {
+          baseFt = Number(c.base);
+          // API palauttaa usein satoja jalkoja (esim. 5 = 500ft)
+          if (baseFt < 50) baseFt = baseFt * 100;
+        }
+        if (baseFt > 0 && baseFt < minCeilingFt) {
+          minCeilingFt = baseFt;
+        }
+      }
+    }
+  }
+
+  // Katon tulkinta
+  if (minCeilingFt !== Infinity) {
+    if (minCeilingFt <= 500) isCritical = true;
+    else if (minCeilingFt < 3000) isWeak = true;
+  }
+
+  // 4. Fallback viralliseen fltCat-kenttään (jos raakadataa ei saatu)
+  if (visMeters === null && minCeilingFt === Infinity && metar.fltCat) {
+    const cat = String(metar.fltCat).toUpperCase();
+    if (cat === 'LIFR') isCritical = true;
+    else if (cat === 'IFR' || cat === 'MVFR') isWeak = true;
+  }
+
+  if (isCritical) return 'critical';
+  if (isWeak) return 'weak';
+  return 'ok';
+}
+
+/* ==============================================================
  * FLIGHT MAP — 2. OSA
  * Gloobus, projektsioon, maapind ja lennumarsruut
  * ============================================================== */
@@ -281,7 +492,7 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
     });
   }
 
-  const wps = waypoints
+    const wps = waypoints
     .filter(w =>
       w &&
       Number.isFinite(w.lat) &&
@@ -293,7 +504,22 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
         lat: w.lat,
         lon: w.lon
       }
-    }));
+    }))
+    // Suodata pois DEP ja DEST, jotta ne eivät näy kahtena tekstinä
+    .filter(w => {
+      const wName = String(w.name || '').toUpperCase();
+      const dIcao = String(depIcao || '').toUpperCase();
+      const aIcao = String(arrIcao || '').toUpperCase();
+
+      // 1. Nimi täsmää DEP tai DEST
+      if (wName && (wName === dIcao || wName === aIcao)) return false;
+
+      // 2. Fyysinen sijainti liian lähellä DEP tai DEST
+      if (dep && d3.geoDistance([w.coords.lon, w.coords.lat], [dep.lon, dep.lat]) < 0.005) return false;
+      if (arr && d3.geoDistance([w.coords.lon, w.coords.lat], [arr.lon, arr.lat]) < 0.005) return false;
+
+      return true;
+    });
 
   if (!points.length) {
     container.innerHTML =
@@ -574,7 +800,6 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
     );
 
     /* --- Cache-tallennus + ready-lippu (vain home-kartalle) --- */
-        /* --- Cache-tallennus + ready-lippu (vain home-kartalle) --- */
     if (container.id === 'fc-map' && container._renderGen === __myGen) {
       window._homeRouteRendered = true;
       try {
@@ -615,7 +840,15 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   for (const point of points) {
     const main = point.role === 'DEP' || point.role === 'DEST';
     const size = main ? 6 : 5;
-    const color = colors[point.role] || '#8ea0b8';
+
+    // Status-väri kun dataa saatavilla, muuten rooliväri
+    const statusInfo = _getAirportStatus(
+      point._airport || { icao: point.icao, notams: [] },
+      options.flight
+    );
+    const color = (statusInfo && statusInfo.color)
+      ? statusInfo.color
+      : (colors[point.role] || '#8ea0b8');
 
     const group = markersG.append('g')
       .style('cursor', 'pointer');

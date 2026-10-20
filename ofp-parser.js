@@ -265,3 +265,35 @@ function parseRouteWaypointNames(routeString) {
   return names;
 }
 window.parseRouteWaypointNames = parseRouteWaypointNames;
+
+/* ==============================================================
+ * NOTAM VALIDITY · B) ja C) -kenttien parsinta
+ * ============================================================== */
+
+function parseNotamValidity(notamText) {
+  const text = String(notamText || '');
+
+  function parseYYMMDDHHMM(s) {
+    if (!s || s.length !== 10) return null;
+    const yy = parseInt(s.substring(0, 2), 10);
+    const mm = parseInt(s.substring(2, 4), 10) - 1;
+    const dd = parseInt(s.substring(4, 6), 10);
+    const hh = parseInt(s.substring(6, 8), 10);
+    const mi = parseInt(s.substring(8, 10), 10);
+    if ([yy, mm, dd, hh, mi].some(v => !isFinite(v))) return null;
+    if (mm < 0 || mm > 11 || dd < 1 || dd > 31) return null;
+    const year = yy >= 70 ? 1900 + yy : 2000 + yy;
+    return Date.UTC(year, mm, dd, hh, mi);
+  }
+
+  const bMatch = text.match(/\bB\)\s*(\d{10})/i);
+  const cMatch = text.match(/\bC\)\s*(\d{10})/i);
+  const isPerm = /\bC\)\s*PERM\b/i.test(text);
+
+  return {
+    validFrom: bMatch ? parseYYMMDDHHMM(bMatch[1]) : null,
+    validTo:   cMatch ? parseYYMMDDHHMM(cMatch[1]) : null,
+    permanent: isPerm
+  };
+}
+window.parseNotamValidity = parseNotamValidity;

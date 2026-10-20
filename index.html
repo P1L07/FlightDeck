@@ -166,7 +166,7 @@
     <div class="section-head">
       <h2>Lennon briefing</h2>
       <div class="section-actions">
-        <button class="btn-ghost" onclick="renderBriefing()">⟳ Päivitä</button>
+        <button class="btn-ghost" onclick="forceRefreshBriefing()">⟳ Päivitä</button>
         <button class="btn-ghost" onclick="openBriefingOFP()">✈ Avaa OFP</button>
       </div>
     </div>
@@ -379,10 +379,16 @@ window.decodeJWT = decodeJWT;
 function switchTab(tabId) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `tab-${tabId}`));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (tabId !== 'flights') {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   if (tabId === 'flights') {
-    if (typeof renderWeekView === 'function') { try { renderWeekView(); } catch (e) {} }
+    // Pakota tämän viikon näkymä
+    if (typeof renderWeekView === 'function') { try { renderWeekView(new Date()); } catch (e) {} }
+    if (typeof _wvScrollToToday === 'function') {
+      requestAnimationFrame(() => _wvScrollToToday(false));
+    }
     let cache = [];
     try { cache = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]'); } catch (e) {}
     if (!cache.length && navigator.onLine && typeof loadAssignedFlights === 'function') {
