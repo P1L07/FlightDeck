@@ -15,6 +15,7 @@
 const JOURNEY_LOG_CACHE_KEY = '_journey_log_cache';
 const JOURNEY_LOG_TTL_MS    = 6 * 60 * 60 * 1000;
 
+
 /* ---------------- Roster-apurit ---------------- */
 function _afGetRoster() {
   try {
@@ -42,21 +43,20 @@ function _afFmtDuration(ms) {
  * Journey-log-cache
  * ============================================================== */
 function _cacheJourneyLog(flightId, data) {
-  try {
-    const cache = JSON.parse(localStorage.getItem(JOURNEY_LOG_CACHE_KEY) || '{}');
-    cache[flightId] = { at: new Date().toISOString(), data };
-    localStorage.setItem(JOURNEY_LOG_CACHE_KEY, JSON.stringify(cache));
-  } catch (e) {}
+  if (!flightId) return;
+  Cache.set(`journey:log:${flightId}`, data, {
+    ttlMs: JOURNEY_LOG_TTL_MS,
+    mode: 'persist'
+  });
 }
 
 function _getCachedJourneyLog(flightId) {
-  try {
-    const cache = JSON.parse(localStorage.getItem(JOURNEY_LOG_CACHE_KEY) || '{}');
-    const entry = cache[flightId];
-    if (!entry) return null;
-    if (Date.now() - new Date(entry.at).getTime() > JOURNEY_LOG_TTL_MS) return null;
-    return entry.data;
-  } catch (e) { return null; }
+  if (!flightId) return null;
+  const hit = Cache.get(`journey:log:${flightId}`, {
+    allowStale: true,
+    mode: 'persist'
+  });
+  return hit?.value || null;
 }
 
 window.getCachedJourneyLog = _getCachedJourneyLog;
@@ -238,113 +238,60 @@ function _parseBlockFuelFromLines(lines) {
   return result;
 }
 
-async function _extractPDFLines(pdfBytes) {
-  if (typeof pdfjsLib === 'undefined') {
-    throw new Error('pdf.js ei ole ladattu');
-  }
-  const data = pdfBytes instanceof Uint8Array
-    ? pdfBytes
-    : new Uint8Array(pdfBytes);
-
-  const pdf = await pdfjsLib.getDocument({ data }).promise;
-  const page = await pdf.getPage(1);
-
-  if (typeof window.getLinesFromPDFPage === 'function') {
-    return await window.getLinesFromPDFPage(page);
-  }
-
-  const content = await page.getTextContent();
-  const lineMap = new Map();
-  content.items.forEach(item => {
-    const y = Math.round(item.transform[5]);
-    if (!lineMap.has(y)) lineMap.set(y, []);
-    lineMap.get(y).push({ x: item.transform[4], str: item.str });
-  });
-  return [...lineMap.entries()]
-    .sort((a, b) => b[0] - a[0])
-    .map(([_, parts]) =>
-      parts.sort((a, b) => a.x - b.x).map(p => p.str).join(' ').trim()
-    );
-}
-
 async function getBlockFuelFromOFP(flightId) {
   const fid = String(flightId || '');
   if (!fid) return null;
 
-  // Positiivinen / negatiivinen cache
-  try {
-    const cache = JSON.parse(localStorage.getItem(BLOCK_FUEL_CACHE_KEY) || '{}');
-    const hit = cache[fid];
-    if (hit?.block) {
-      return {
-        block: hit.block,
-        minBlock: hit.minBlock || hit.block,
-        timeHours: hit.timeHours || null,
-        display: _formatFuelKg(hit.block),
-        minDisplay: _formatFuelKg(hit.minBlock || hit.block)
-      };
-    }
-    if (hit?.notAvailable) {
-      const age = Date.now() - new Date(hit.notAvailable).getTime();
-      if (age < BLOCK_FUEL_NEG_TTL) return null;
-    }
-  } catch (e) {}
+  // 1. Positiivinen cache
+  const posHit = Cache.get(`blockfuel:${fid}`, { mode: 'persist' });
+  if (posHit?.value?.block) {
+    const v = posHit.value;
+    return {
+      block: v.block,
+      minBlock: v.minBlock || v.block,
+      timeHours: v.timeHours || null,
+      display: _formatFuelKg(v.block),
+      minDisplay: _formatFuelKg(v.minBlock || v.block)
+    };
+  }
 
-  // Käytä jaettua PDF-cachea jos saatavilla
-  let pdfBytes = null;
+  // 2. Negatiivinen cache (ei yritetä uudelleen)
+  const negHit = Cache.get(`blockfuel:neg:${fid}`, { mode: 'persist' });
+  if (negHit) return null;
+
+  // 3. Hae PDF-rivit (jaetusta välimuistista)
+  let lines;
   try {
-    if (typeof _getPDFBytesForFlight === 'function') {
-      const entry = await _getPDFBytesForFlight(fid);
-      pdfBytes = entry?.bytes || null;
-    } else if (typeof fetchSkyplanOFPBytes === 'function') {
-      const token = (typeof getValidSkyplanToken === 'function')
-        ? await getValidSkyplanToken().catch(() => null)
-        : null;
-      const r = await fetchSkyplanOFPBytes(fid, token);
-      pdfBytes = r?.pdfBytes || null;
-    }
+    if (typeof getPDFLinesForFlight !== 'function') return null;
+    lines = await getPDFLinesForFlight(fid);
   } catch (e) {
     const is422 = /422|not generated/i.test(e.message || '');
-    if (!is422) console.warn('[BlockFuel] fetch failed:', e.message);
-    try {
-      const cache = JSON.parse(localStorage.getItem(BLOCK_FUEL_CACHE_KEY) || '{}');
-      cache[fid] = { notAvailable: new Date().toISOString() };
-      localStorage.setItem(BLOCK_FUEL_CACHE_KEY, JSON.stringify(cache));
-    } catch (e2) {}
+    if (!is422) console.warn('[BlockFuel] lines failed:', e.message);
+    Cache.set(`blockfuel:neg:${fid}`, true, { ttlMs: BLOCK_FUEL_NEG_TTL, mode: 'persist' });
     return null;
   }
 
-  if (!pdfBytes) {
-    try {
-      const cache = JSON.parse(localStorage.getItem(BLOCK_FUEL_CACHE_KEY) || '{}');
-      cache[fid] = { notAvailable: new Date().toISOString() };
-      localStorage.setItem(BLOCK_FUEL_CACHE_KEY, JSON.stringify(cache));
-    } catch (e) {}
-    return null;
-  }
-
+  // 4. Parsi
   try {
-    const lines = await _extractPDFLines(pdfBytes);
     const parsed = _parseBlockFuelFromLines(lines);
-    if (!parsed) return null;
+    if (!parsed) {
+      Cache.set(`blockfuel:neg:${fid}`, true, { ttlMs: BLOCK_FUEL_NEG_TTL, mode: 'persist' });
+      return null;
+    }
 
-    try {
-      const cache = JSON.parse(localStorage.getItem(BLOCK_FUEL_CACHE_KEY) || '{}');
-      cache[fid] = {
-        block: parsed.block,
-        minBlock: parsed.minBlock,
-        timeHours: parsed.timeHours,
-        at: new Date().toISOString()
-      };
-      localStorage.setItem(BLOCK_FUEL_CACHE_KEY, JSON.stringify(cache));
-    } catch (e) {}
-
-    return {
+    const payload = {
       block: parsed.block,
       minBlock: parsed.minBlock,
-      timeHours: parsed.timeHours,
-      display: _formatFuelKg(parsed.block),
-      minDisplay: _formatFuelKg(parsed.minBlock)
+      timeHours: parsed.timeHours
+    };
+    Cache.set(`blockfuel:${fid}`, payload, { ttlMs: 6 * 60 * 60 * 1000, mode: 'persist' });
+
+    return {
+      block: payload.block,
+      minBlock: payload.minBlock,
+      timeHours: payload.timeHours,
+      display: _formatFuelKg(payload.block),
+      minDisplay: _formatFuelKg(payload.minBlock)
     };
   } catch (e) {
     console.warn('[BlockFuel] parse failed:', e.message);

@@ -331,6 +331,15 @@ async function _fetchRosterRange(monthOffset) {
   }
 }
 
+/* ==============================================================
+ * forceRosterSync · In-flight dedup
+ * ==============================================================
+ * Estää rinnakkaiset synkkaukset. Jos kutsu tulee kun edellinen
+ * on kesken, palautetaan sama Promise — ei uutta API-kierrosta.
+ * ============================================================== */
+
+let _forceRosterSyncInFlight = null;
+
 async function forceRosterSync(options = {}) {
   const { silent = false, forceCompare = true } = options;
 
@@ -341,116 +350,129 @@ async function forceRosterSync(options = {}) {
     return null;
   }
 
-  // 1. Lue edellinen API-vastaus vertailua varten
-  let previousAPI = null;
-  try {
-    const raw = localStorage.getItem('assigned_flights_last_api');
-    previousAPI = raw ? JSON.parse(raw) : null;
-  } catch (e) {}
+  // Jos jo käynnissä → odota samaa lupausta
+  if (_forceRosterSyncInFlight) {
+    if (!silent) console.log('[RosterSync] Jo käynnissä — odotetaan');
+    return await _forceRosterSyncInFlight;
+  }
 
-  try {
-    // 2. Hae kolme kuukautta erikseen: edellinen, nykyinen, seuraava
+  _forceRosterSyncInFlight = (async () => {
+    // 1. Lue edellinen API-vastaus vertailua varten
+    let previousAPI = null;
+    try {
+      const raw = localStorage.getItem('assigned_flights_last_api');
+      previousAPI = raw ? JSON.parse(raw) : null;
+    } catch (e) {}
 
-    const [prevFlights, currFlights, nextFlights] = await Promise.all([
-      _fetchRosterRange(-1),
-      _fetchRosterRange(0),
-      _fetchRosterRange(1)
-    ]);
+    try {
+      // 2. Hae kolme kuukautta erikseen: edellinen, nykyinen, seuraava
+      const [prevFlights, currFlights, nextFlights] = await Promise.all([
+        _fetchRosterRange(-1),
+        _fetchRosterRange(0),
+        _fetchRosterRange(1)
+      ]);
 
-    // 3. Yhdistä — poista duplikaatit ID:n perusteella
-    const map = new Map();
-    [...prevFlights, ...currFlights, ...nextFlights].forEach(f => {
-      const id = String(f.ID || f.id || f.FlightID || '');
-      if (id) map.set(id, f);
-    });
-    const allFlights = Array.from(map.values());
+      // 3. Yhdistä — poista duplikaatit ID:n perusteella
+      const map = new Map();
+      [...prevFlights, ...currFlights, ...nextFlights].forEach(f => {
+        const id = String(f.ID || f.id || f.FlightID || '');
+        if (id) map.set(id, f);
+      });
+      const allFlights = Array.from(map.values());
 
-    // SUOJA: jos kaikki kolme palauttivat 0 → API-ongelma
-    if (allFlights.length === 0) {
-      console.warn('[RosterSync] Kaikki 3 kuukautta palauttivat 0 — ohitetaan');
-      if (!silent && typeof showToast === 'function') {
-        showToast('API ei palauttanut dataa. Yritä myöhemmin uudelleen.', 'warning');
+      // SUOJA: jos kaikki kolme palauttivat 0 → API-ongelma
+      if (allFlights.length === 0) {
+        console.warn('[RosterSync] Kaikki 3 kuukautta palauttivat 0 — ohitetaan');
+        if (!silent && typeof showToast === 'function') {
+          showToast('API ei palauttanut dataa. Yritä myöhemmin uudelleen.', 'warning');
+        }
+        return null;
       }
-      return null;
-    }
 
-    // 4. Tallenna raaka API-vastaus vertailua varten
-    window._lastRosterAPIResponse = allFlights.slice();
+      // 4. Tallenna raaka API-vastaus vertailua varten
+      window._lastRosterAPIResponse = allFlights.slice();
 
-    // Aikaväli-tagi: käytetään "3kk" -tunnistetta (koska data on 3 kk ikkunasta)
-    const rangeTag = '3kk-window';
-    try {
-      localStorage.setItem('assigned_flights_last_api', JSON.stringify({
-        from: rangeTag,
-        to: rangeTag,
-        at: new Date().toISOString(),
-        flights: allFlights
-      }));
-    } catch (e) {
-      console.warn('[Roster] API-vastauksen tallennus epäonnistui:', e);
-    }
-
-    // 5. Päivitä cache (merge)
-    try {
-      const existing = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-      const merged = mergeRosterFlights(existing, allFlights);
-      localStorage.setItem('assigned_flights_cache', JSON.stringify(merged));
-      localStorage.setItem('assigned_flights_cache_time',
-        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-
-      const dates = allFlights
-        .map(f => String(f.StdLt || f.Std || '').split('T')[0])
-        .filter(Boolean)
-        .sort();
-      if (dates.length) {
-        localStorage.setItem('assigned_flights_cache_range', JSON.stringify({
-          from: dates[0],
-          to:   dates[dates.length - 1],
-          at:   new Date().toISOString()
+      // Aikaväli-tagi: käytetään "3kk" -tunnistetta (koska data on 3 kk ikkunasta)
+      const rangeTag = '3kk-window';
+      try {
+        localStorage.setItem('assigned_flights_last_api', JSON.stringify({
+          from: rangeTag,
+          to: rangeTag,
+          at: new Date().toISOString(),
+          flights: allFlights
         }));
+      } catch (e) {
+        console.warn('[Roster] API-vastauksen tallennus epäonnistui:', e);
       }
+
+      // 5. Päivitä cache (merge)
+      try {
+        const existing = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+        const merged = mergeRosterFlights(existing, allFlights);
+        localStorage.setItem('assigned_flights_cache', JSON.stringify(merged));
+        localStorage.setItem('assigned_flights_cache_time',
+          new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+        const dates = allFlights
+          .map(f => String(f.StdLt || f.Std || '').split('T')[0])
+          .filter(Boolean)
+          .sort();
+        if (dates.length) {
+          localStorage.setItem('assigned_flights_cache_range', JSON.stringify({
+            from: dates[0],
+            to:   dates[dates.length - 1],
+            at:   new Date().toISOString()
+          }));
+        }
+      } catch (e) {
+        console.warn('[RosterSync] Cache-tallennus epäonnistui:', e);
+      }
+
+      // 6. Päivitä UI
+      if (typeof renderWeekView === 'function') {
+        const weekActive = document.querySelector(
+          '#flights-view-toggle .vt-btn[data-view="week"].active'
+        );
+        if (weekActive) renderWeekView();
+      }
+      if (typeof renderLogbookTable === 'function'
+          && document.querySelector('.tab-btn[data-tab="logbook"].active')) {
+        renderLogbookTable();
+      }
+
+      // 7. Vertaa edelliseen API-vastaukseen
+      if (!forceCompare || !previousAPI || !Array.isArray(previousAPI.flights)) {
+        if (!silent && typeof showToast === 'function') {
+          showToast(`Roster synkronoitu: ${allFlights.length} lentoa.`, 'success');
+        }
+        return null;
+      }
+
+      const changes = compareRosters(previousAPI.flights, allFlights);
+
+      if (changes.total > 0) {
+        const prevTime = previousAPI.at
+          ? new Date(previousAPI.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : '';
+        showRosterChangeModal(changes, prevTime);
+      } else if (!silent && typeof showToast === 'function') {
+        showToast('Roster on ajan tasalla.', 'success');
+      }
+      return changes;
+
     } catch (e) {
-      console.warn('[RosterSync] Cache-tallennus epäonnistui:', e);
-    }
-
-    // 6. Päivitä UI
-    if (typeof renderWeekView === 'function') {
-      const weekActive = document.querySelector(
-        '#flights-view-toggle .vt-btn[data-view="week"].active'
-      );
-      if (weekActive) renderWeekView();
-    }
-    if (typeof renderLogbookTable === 'function'
-        && document.querySelector('.tab-btn[data-tab="logbook"].active')) {
-      renderLogbookTable();
-    }
-
-    // 7. Vertaa edelliseen API-vastaukseen
-    if (!forceCompare || !previousAPI || !Array.isArray(previousAPI.flights)) {
+      console.warn('[RosterSync] failed:', e);
       if (!silent && typeof showToast === 'function') {
-        showToast(`Roster synkronoitu: ${allFlights.length} lentoa.`, 'success');
+        showToast('Roster-sync epäonnistui.', 'error');
       }
       return null;
     }
+  })();
 
-    const changes = compareRosters(previousAPI.flights, allFlights);
-
-    if (changes.total > 0) {
-      const prevTime = previousAPI.at
-        ? new Date(previousAPI.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : '';
-      showRosterChangeModal(changes, prevTime);
-    } else if (!silent && typeof showToast === 'function') {
-      showToast('Roster on ajan tasalla.', 'success');
-    }
-    return changes;
-
-  } catch (e) {
-    console.warn('[RosterSync] failed:', e);
-    if (!silent && typeof showToast === 'function') {
-      showToast('Roster-sync epäonnistui.', 'error');
-    }
-    return null;
+  try {
+    return await _forceRosterSyncInFlight;
+  } finally {
+    _forceRosterSyncInFlight = null;
   }
 }
 

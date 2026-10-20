@@ -667,30 +667,62 @@ function _notamWxWrite(cache) {
 }
 
 function _notamWxGet(icao) {
-  const cache = _notamWxRead();
-  const entry = cache[icao];
-  if (!entry) return null;
-  const age = Date.now() - new Date(entry.at).getTime();
-  if (age > NOTAM_WX_CACHE_STALE_MS) return null;
+  const m = Cache.get(`wx:metar:${icao}`, { allowStale: true, mode: 'persist' });
+  const t = Cache.get(`wx:taf:${icao}`, { allowStale: true, mode: 'persist' });
+  if (!m && !t) return null;
   return {
-    metar: entry.metar || null,
-    taf: entry.taf || null,
-    at: entry.at,
-    isStale: age > NOTAM_WX_CACHE_TTL_MS
+    metar: m?.value || null,
+    taf: t?.value || null,
+    at: m?.savedAt ? new Date(m.savedAt).toISOString() : new Date().toISOString(),
+    isStale: (m?.stale || t?.stale) || false
   };
 }
 
 function _notamWxSet(icao, metar, taf) {
-  const cache = _notamWxRead();
-  cache[icao] = {
-    metar: metar || null,
-    taf: taf || null,
-    at: new Date().toISOString()
-  };
-  _notamWxWrite(cache);
+  if (metar) Cache.set(`wx:metar:${icao}`, metar, { ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' });
+  if (taf)   Cache.set(`wx:taf:${icao}`,   taf,   { ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' });
 }
-window._notamWxGet = _notamWxGet;
-window._notamWxSet = _notamWxSet;
+
+async function fetchWXForAirport(icao, options = {}) {
+  const { forceRefresh = false } = options;
+
+  if (!navigator.onLine) {
+    const cached = _notamWxGet(icao);
+    if (cached) return { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true };
+    return { metar: null, taf: null, fromCache: false };
+  }
+
+  if (typeof fetchMETAR !== 'function' || typeof fetchTAF !== 'function') {
+    const cached = _notamWxGet(icao);
+    return cached
+      ? { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true }
+      : { metar: null, taf: null, fromCache: false };
+  }
+
+  try {
+    const [metar, taf] = await Promise.all([
+      Cache.getOrFetch(`wx:metar:${icao}`,
+        { forceRefresh, ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' },
+        () => fetchMETAR(icao)).catch(() => null),
+      Cache.getOrFetch(`wx:taf:${icao}`,
+        { forceRefresh, ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' },
+        () => fetchTAF(icao)).catch(() => null)
+    ]);
+
+    const cached = _notamWxGet(icao);
+    const finalMetar = metar || cached?.metar || null;
+    const finalTaf   = taf   || cached?.taf   || null;
+
+    if (!finalMetar && !finalTaf) {
+      return { metar: null, taf: null, fromCache: false };
+    }
+    return { metar: finalMetar, taf: finalTaf, fromCache: false };
+  } catch (e) {
+    const cached = _notamWxGet(icao);
+    if (cached) return { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true };
+    return { metar: null, taf: null, fromCache: false };
+  }
+}
 
 /* ==============================================================
  * Esilataa sää kaikille kentille
@@ -765,42 +797,4 @@ async function _preloadWxForAirports(airports) {
   }));
 }
 window._preloadWxForAirports = _preloadWxForAirports;
-/* ==============================================================
- * Hae WX cache-ensisijaisesti
- * ============================================================== */
-async function fetchWXForAirport(icao, options = {}) {
-  const cached = _notamWxGet(icao);
 
-  // Palauta cachesta vain jos SEKÄ metar ETTÄ taf ovat olemassa
-  if (cached && !cached.isStale && !options.forceRefresh && cached.metar && cached.taf) {
-    return { metar: cached.metar, taf: cached.taf, fromCache: true };
-  }
-
-  if (!navigator.onLine) {
-    if (cached) {
-      return { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true };
-    }
-    return { metar: null, taf: null, fromCache: false };
-  }
-
-  if (typeof fetchMETAR !== 'function' || typeof fetchTAF !== 'function') {
-    if (cached) return { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true };
-    return { metar: null, taf: null, fromCache: false };
-  }
-
-  try {
-    const [metar, taf] = await Promise.all([
-      fetchMETAR(icao).catch(() => null),
-      fetchTAF(icao).catch(() => null)
-    ]);
-    // Tallenna cacheen vain jos jotain saatiin — mutta säilytä aiempi metar jos uusi puuttuu
-    const finalMetar = metar || cached?.metar || null;
-    const finalTaf   = taf   || cached?.taf   || null;
-    if (finalMetar || finalTaf) _notamWxSet(icao, finalMetar, finalTaf);
-    return { metar: finalMetar, taf: finalTaf, fromCache: false };
-  } catch (e) {
-    if (cached) return { metar: cached.metar, taf: cached.taf, fromCache: true, isStale: true };
-    return { metar: null, taf: null, fromCache: false };
-  }
-}
-window.fetchWXForAirport = fetchWXForAirport;

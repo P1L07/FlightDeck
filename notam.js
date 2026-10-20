@@ -48,45 +48,6 @@ function _notamProxied(targetUrl) {
   return `${base}/?url=${encodeURIComponent(targetUrl)}`;
 }
 
-/* ==============================================================
- * Cache
- * ============================================================== */
-function _notamCacheRead() {
-  try { return JSON.parse(localStorage.getItem(NOTAM_CACHE_KEY) || '{}') || {}; }
-  catch (e) { return {}; }
-}
-function _notamCacheWrite(c) {
-  try { localStorage.setItem(NOTAM_CACHE_KEY, JSON.stringify(c)); }
-  catch (e) {}
-}
-
-function _notamCacheGet(icao) {
-  const c = _notamCacheRead();
-  const hit = c[icao];
-  if (!hit) return null;
-  if (Date.now() - hit.t > NOTAM_CACHE_TTL) return null;
-  return hit.data;
-}
-
-function _notamCacheGetStale(icao) {
-  const c = _notamCacheRead();
-  const hit = c[icao];
-  if (!hit) return null;
-  if (Date.now() - hit.t > NOTAM_MAX_AGE) return null;
-  return hit.data;
-}
-
-function _notamCacheSet(icao, data) {
-  const c = _notamCacheRead();
-  c[icao] = { t: Date.now(), data };
-  const keys = Object.keys(c);
-  if (keys.length > 100) {
-    keys.sort((a, b) => c[a].t - c[b].t)
-        .slice(0, keys.length - 100)
-        .forEach(k => delete c[k]);
-  }
-  _notamCacheWrite(c);
-}
 
 /* ==============================================================
  * Hae NOTAMit

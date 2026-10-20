@@ -14,8 +14,7 @@
  * ============================================================== */
 'use strict';
 
-const NOTAM_OFP_CACHE_KEY = 'notam_ofp_cache_v3';
-const NOTAM_OFP_CACHE_TTL = 30 * 60 * 1000; // 30 min (localStorage-cache)
+const NOTAM_OFP_TTL = 30 * 60 * 1000;
 
 /* ==============================================================
  * JAETTU PDF-BYTES CACHE — yksi lataus per lento
@@ -39,6 +38,54 @@ window._getCachedPDFBytes = function(fid) {
 
 const PDF_CACHE_GRACE_AFTER_STA = 24 * 60 * 60 * 1000;   // 24 h
 const PDF_CACHE_STALE_FALLBACK  = 7 * 24 * 60 * 60 * 1000; // 7 vrk
+
+/* ==============================================================
+ * PDF-RIVIVÄLIMUISTI · jaettu kaikkien OFP-lukijoiden kesken
+ * ==============================================================
+ * - Yksi PDF-purku per lento (ei kolmea)
+ * - TTL 30 min muistissa
+ * - Invalidoidaan _invalidatePDFCache:n yhteydessä
+ * ============================================================== */
+const _pdfLinesCache = new Map();       // fid → Promise<string[]>
+const _pdfLinesCacheAt = new Map();     // fid → timestamp
+const PDF_LINES_TTL = 30 * 60 * 1000;
+
+async function getPDFLinesForFlight(fid, options = {}) {
+  const key = String(fid);
+  const { forceRefresh = false } = options;
+
+  if (!forceRefresh) {
+    const at = _pdfLinesCacheAt.get(key);
+    const promise = _pdfLinesCache.get(key);
+    if (promise && at && (Date.now() - at) < PDF_LINES_TTL) {
+      return await promise;
+    }
+  }
+
+  const promise = (async () => {
+    const entry = await _getPDFBytesForFlight(key);
+    if (!entry?.bytes) throw new Error('Ei PDF-tavuja');
+    return await _notamReadPDFLines(entry.bytes);
+  })();
+
+  _pdfLinesCache.set(key, promise);
+  _pdfLinesCacheAt.set(key, Date.now());
+
+  try {
+    return await promise;
+  } catch (e) {
+    _pdfLinesCache.delete(key);
+    _pdfLinesCacheAt.delete(key);
+    throw e;
+  }
+}
+window.getPDFLinesForFlight = getPDFLinesForFlight;
+
+window._invalidatePDFLinesCache = function(fid) {
+  const key = String(fid);
+  _pdfLinesCache.delete(key);
+  _pdfLinesCacheAt.delete(key);
+};
 
 function _cleanupOldPDFCache() {
   const now = Date.now();
@@ -140,8 +187,11 @@ window._clear422Cache = function() {
 };
 
 function _invalidatePDFCache(fid) {
-  _pdfBytesCache.delete(String(fid));
-  _pdfBytesInFlight.delete(String(fid));
+  const key = String(fid);
+  _pdfBytesCache.delete(key);
+  _pdfBytesInFlight.delete(key);
+  _pdfLinesCache.delete(key);
+  _pdfLinesCacheAt.delete(key);
 }
 window._invalidatePDFCache = _invalidatePDFCache;
 
@@ -245,36 +295,24 @@ async function parseOFPsForNotams(flightId) {
   if (!fid) throw new Error('Ei Flight ID:tä');
 
   // localStorage-cache
-  try {
-    const cache = JSON.parse(localStorage.getItem(NOTAM_OFP_CACHE_KEY) || '{}');
-    const hit = cache[fid];
-    if (hit && (Date.now() - new Date(hit.at).getTime()) < NOTAM_OFP_CACHE_TTL) {
-      return hit.data;
-    }
-  } catch (e) {}
+  const cached = Cache.get(`notam:ofp:${fid}`, { mode: 'persist' });
+  if (cached?.value) return cached.value;
 
   if (typeof extractNOTAMs !== 'function') {
     throw new Error('extractNOTAMs puuttuu');
   }
 
-  let entry;
+  let lines;
   try {
-    // Hae PDF (jaettu cache — yksi lataus per lento)
-    entry = await _getPDFBytesForFlight(fid);
-    } catch (err) {
+    lines = await getPDFLinesForFlight(fid);
+  } catch (err) {
     if (err.code === 'OFP_NOT_AVAILABLE' || String(err.message).includes('422')) {
       const data = { flightId: fid, notams: [], at: new Date().toISOString(), is422: true };
-      try {
-        const cache = JSON.parse(localStorage.getItem(NOTAM_OFP_CACHE_KEY) || '{}');
-        cache[fid] = { at: new Date().toISOString(), data };
-        localStorage.setItem(NOTAM_OFP_CACHE_KEY, JSON.stringify(cache));
-      } catch (e) {}
+      Cache.set(`notam:ofp:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
       return data;
     }
     throw err;
   }
-
-  const lines = await _notamReadPDFLines(entry.bytes);
 
   const rawNotams = extractNOTAMs(lines);
   const notams = _notamEnrich(rawNotams);
@@ -286,19 +324,9 @@ async function parseOFPsForNotams(flightId) {
   };
 
   // Tallenna localStorageen
-  try {
-    const cache = JSON.parse(localStorage.getItem(NOTAM_OFP_CACHE_KEY) || '{}');
-    cache[fid] = { at: new Date().toISOString(), data };
-    const keys = Object.keys(cache);
-    if (keys.length > 50) {
-      keys.sort((a, b) => new Date(cache[a].at) - new Date(cache[b].at))
-        .slice(0, keys.length - 50)
-        .forEach(k => delete cache[k]);
-    }
-    localStorage.setItem(NOTAM_OFP_CACHE_KEY, JSON.stringify(cache));
-  } catch (e) {}
-
+  Cache.set(`notam:ofp:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
   return data;
+
 }
 window.parseOFPsForNotams = parseOFPsForNotams;
 
@@ -438,8 +466,7 @@ window.buildAirportData = buildAirportData;
  *              totalMins, fob, rawTime, page, y_anchor }]
  * ============================================================== */
 
-const NOTAM_WP_CACHE_KEY = 'notam_wp_cache_v3';
-const NOTAM_WP_CACHE_TTL = 60 * 60 * 1000; // 60 min
+const NOTAM_WP_TTL = 60 * 60 * 1000;
 
 async function parseWaypoints(page, pageNum) {
   const textContent = await page.getTextContent();

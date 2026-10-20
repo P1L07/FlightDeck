@@ -115,14 +115,10 @@ async function _getTripOFPData(fid) {
 
   const p = (async () => {
     try {
-      if (typeof _getPDFBytesForFlight !== 'function') return null;
-      if (typeof _notamReadPDFLines !== 'function') return null;
+      if (typeof getPDFLinesForFlight !== 'function') return null;
 
-      // Jaettu PDF-cache — ei lataa uudelleen jos NOTAM/waypoint parseri haki
-      const entry = await _getPDFBytesForFlight(key);
-      if (!entry?.bytes) return null;
-
-      const lines = await _notamReadPDFLines(entry.bytes);
+      // Sama rivivälimuisti kuin NOTAM- ja waypoint-parsereilla
+      const lines = await getPDFLinesForFlight(key);
       const parsed = _parseOFPFuelAndWeights(lines);
 
       try {

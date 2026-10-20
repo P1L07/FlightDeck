@@ -4240,13 +4240,22 @@ if (document.readyState === 'loading') {
  * AUTO-IMPORT · päättyneet lennot
  * ============================================================== */
 let _autoScanInFlight = false;
+let _lastScanAt = 0;
+const SCAN_MIN_INTERVAL_MS = 60 * 1000; // Älä skannaa useammin kuin kerran minuutissa
 
 async function scanForCompletedFlights() {
   if (_autoScanInFlight) return [];
   if (!navigator.onLine) return [];
 
+  // Cooldown: skip jos skannattu äskettäin
+  if (Date.now() - _lastScanAt < SCAN_MIN_INTERVAL_MS) {
+    return [];
+  }
+
   _autoScanInFlight = true;
+  _lastScanAt = Date.now();
   const imported = [];
+  // ... loput säilyvät ennallaan
 
   try {
     const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');

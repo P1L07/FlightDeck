@@ -42,52 +42,39 @@ function _wxCacheSet(key, data) {
 }
 
 async function fetchMETAR(icao) {
-  const key = `metar:${icao}`;
-  const cached = _wxCacheGet(key);
-  if (cached) return cached;
-
-  const target = `${WX_BASE}/metar?ids=${encodeURIComponent(icao)}&format=json&hours=12`;
-  const resp = await fetch(_wxProxied(target));
-  if (!resp.ok) throw new Error(`METAR HTTP ${resp.status}`);
-
-  // Tyhjä tai ei-JSON vastaus = kentällä ei ole METARia juuri nyt
-  const text = await resp.text();
-  if (!text || !text.trim()) return null;
-
-  let arr;
-  try { arr = JSON.parse(text); }
-  catch (e) {
-    console.warn(`[METAR ${icao}] Ei JSONia — ohitetaan`);
-    return null;
-  }
-
-  const data = Array.isArray(arr) && arr.length ? arr[0] : null;
-  if (data) _wxCacheSet(key, data);
-  return data;
+  return Cache.getOrFetch(
+    `wx:metar:${icao}`,
+    { ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' },
+    async () => {
+      const target = `${WX_BASE}/metar?ids=${encodeURIComponent(icao)}&format=json&hours=12`;
+      const resp = await fetch(_wxProxied(target));
+      if (!resp.ok) throw new Error(`METAR HTTP ${resp.status}`);
+      const text = await resp.text();
+      if (!text || !text.trim()) return null;
+      try {
+        const arr = JSON.parse(text);
+        return Array.isArray(arr) && arr.length ? arr[0] : null;
+      } catch (e) { return null; }
+    }
+  );
 }
 
 async function fetchTAF(icao) {
-  const key = `taf:${icao}`;
-  const cached = _wxCacheGet(key);
-  if (cached) return cached;
-
-  const target = `${WX_BASE}/taf?ids=${encodeURIComponent(icao)}&format=json`;
-  const resp = await fetch(_wxProxied(target));
-  if (!resp.ok) throw new Error(`TAF HTTP ${resp.status}`);
-
-  const text = await resp.text();
-  if (!text || !text.trim()) return null;
-
-  let arr;
-  try { arr = JSON.parse(text); }
-  catch (e) {
-    console.warn(`[TAF ${icao}] Ei JSONia — ohitetaan`);
-    return null;
-  }
-
-  const data = Array.isArray(arr) && arr.length ? arr[0] : null;
-  if (data) _wxCacheSet(key, data);
-  return data;
+  return Cache.getOrFetch(
+    `wx:taf:${icao}`,
+    { ttlMs: 20 * 60 * 1000, staleTtlMs: 6 * 60 * 60 * 1000, mode: 'persist' },
+    async () => {
+      const target = `${WX_BASE}/taf?ids=${encodeURIComponent(icao)}&format=json`;
+      const resp = await fetch(_wxProxied(target));
+      if (!resp.ok) throw new Error(`TAF HTTP ${resp.status}`);
+      const text = await resp.text();
+      if (!text || !text.trim()) return null;
+      try {
+        const arr = JSON.parse(text);
+        return Array.isArray(arr) && arr.length ? arr[0] : null;
+      } catch (e) { return null; }
+    }
+  );
 }
 
 /* ---------------- Apurit ---------------- */

@@ -646,50 +646,24 @@ async function forceRefreshBriefing() {
 
   if (typeof showToast === 'function') showToast('Haetaan tuoreet tiedot...', 'info');
 
-  // 1. Tyhjennä Sään välimuisti (pakottaa METAR/TAF hakemaan verkkopalvelimelta)
-  try {
-    const wxCache = JSON.parse(localStorage.getItem('wx_cache_v1') || '{}');
-    delete wxCache[`metar:${dep}`];
-    delete wxCache[`taf:${dep}`];
-    delete wxCache[`metar:${arr}`];
-    delete wxCache[`taf:${arr}`];
-    localStorage.setItem('wx_cache_v1', JSON.stringify(wxCache));
+  // 1. Sää — tyhjennä kaikki wx-cachet (koko lento + kaikki kentät)
+  Cache.invalidate('wx:');
 
-    const nwx = JSON.parse(localStorage.getItem('notam_wx_cache_v2') || '{}');
-    delete nwx[dep];
-    delete nwx[arr];
-    localStorage.setItem('notam_wx_cache_v2', JSON.stringify(nwx));
-  } catch (e) {}
-
-  // 2. Tyhjennä OFP (PDF) välimuisti (mukaan lukien 422-tila)
+  // 2. OFP PDF-tavut ja rivit
   if (typeof window._invalidatePDFCache === 'function') {
     window._invalidatePDFCache(flightId);
   }
 
-  // 3. Tyhjennä NOTAM-välimuisti (pakottaa parserin yrittämään uudelleen)
-  try {
-    const ofpCache = JSON.parse(localStorage.getItem('notam_ofp_cache_v3') || '{}');
-    delete ofpCache[flightId];
-    localStorage.setItem('notam_ofp_cache_v3', JSON.stringify(ofpCache));
-  } catch (e) {}
+  // 3. OFP:stä johdetut cachet (NOTAMit, waypointit, painot)
+  Cache.invalidate(`notam:ofp:${flightId}`);
+  Cache.invalidate(`notam:wp:${flightId}`);
+  Cache.invalidate(`blockfuel:${flightId}`);
+  Cache.invalidate(`blockfuel:neg:${flightId}`);
 
-  // 4. Tyhjennä Waypoint-välimuisti
-  try {
-    const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v3') || '{}');
-    delete wpCache[flightId];
-    localStorage.setItem('notam_wp_cache_v3', JSON.stringify(wpCache));
-  } catch (e) {}
+  // 4. Journey-log (miehistö)
+  Cache.invalidate(`journey:log:${flightId}`);
 
-  // 5. Tyhjennä Miehistön välimuisti
-  try {
-    const jlCache = JSON.parse(localStorage.getItem('journey_log_cache') || '{}');
-    if (jlCache[flightId]) {
-      delete jlCache[flightId];
-      localStorage.setItem('journey_log_cache', JSON.stringify(jlCache));
-    }
-  } catch (e) {}
-
-  // 6. Pakota lennon perustietojen haku uudelleen (päivittää esim. standin)
+  // 5. Päivitä lennon perustiedot rosterista (stand)
   if (typeof refreshSingleFlightFromRoster === 'function') {
     try {
       const fresh = await refreshSingleFlightFromRoster(flightId, f.StdLt || f.Std);
@@ -704,7 +678,7 @@ async function forceRefreshBriefing() {
     } catch (e) {}
   }
 
-  // 7. Piirrä näkymä uudelleen puhtailla tiedoilla
+  // 6. Renderöi uudelleen
   await renderBriefing();
   if (typeof showToast === 'function') showToast('Briefing päivitetty.', 'success');
 }

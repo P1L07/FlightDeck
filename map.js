@@ -245,12 +245,21 @@ function _getAirportStatus(airport, flight) {
     return { status: 'critical', reason: 'notam-closed', color: AIRPORT_STATUS_COLORS.critical };
   }
 
-  // 2. Haetaan METAR-objekti välimuisteista
+  // 2. Haetaan METAR-objekti — useasta lähteestä
   let metar = null;
+
+  // 2a. Suora airport-objekti (jos kutsuja on jo rikastanut sen)
   if (airport.metar) metar = airport.metar;
   if (!metar && airport.wx?.metar) metar = airport.wx.metar;
   if (!metar && airport.weather?.metar) metar = airport.weather.metar;
 
+  // 2b. Cache (ensisijainen lähde) — allowStale jotta offline toimii
+  if (!metar && typeof Cache !== 'undefined') {
+    const m = Cache.get(`wx:metar:${icao}`, { allowStale: true, mode: 'persist' });
+    if (m?.value) metar = m.value;
+  }
+
+  // 2c. Globaalit muisti-cachet (legacy)
   if (!metar) {
     const gl = [window._wxCache, window.wxCache, window._weatherCache];
     for (const g of gl) {
@@ -260,6 +269,8 @@ function _getAirportStatus(airport, flight) {
       if (g[`metar:${icao}`]?.data) { metar = g[`metar:${icao}`].data; break; }
     }
   }
+
+  // 2d. Legacy localStorage (backward compat — poistuu kun vanhat asennukset päivittyvät)
   if (!metar) {
     try {
       const c = JSON.parse(localStorage.getItem('notam_wx_cache_v2') || '{}');
@@ -802,17 +813,11 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
     /* --- Cache-tallennus + ready-lippu (vain home-kartalle) --- */
     if (container.id === 'fc-map' && container._renderGen === __myGen) {
       window._homeRouteRendered = true;
-      try {
-        localStorage.setItem('home_route_cache_v1', JSON.stringify({
-          depIcao,
-          arrIcao,
-          options: {
-            waypoints: options.waypoints || []
-          },
-          savedAt: new Date().toISOString(),
-          validUntil: Date.now() + 6 * 60 * 60 * 1000
-        }));
-      } catch (e) {}
+      Cache.set('route:home', {
+        depIcao,
+        arrIcao,
+        options: { waypoints: options.waypoints || [] }
+      }, { ttlMs: 6 * 60 * 60 * 1000, mode: 'persist' });
     }
   }
 
@@ -1359,12 +1364,9 @@ window._homeRouteRendered = false;
  */
 window.renderHomeRouteFromCache = function () {
   try {
-    const raw = localStorage.getItem('home_route_cache_v1');
-    if (!raw) return false;
-
-    const c = JSON.parse(raw);
+    const hit = Cache.get('route:home', { mode: 'persist' });
+    const c = hit?.value;
     if (!c?.depIcao || !c?.arrIcao) return false;
-    if (c.validUntil && c.validUntil < Date.now()) return false;
 
     const container = document.getElementById('fc-map');
     if (!container || !container.isConnected) return false;

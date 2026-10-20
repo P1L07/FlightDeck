@@ -33,6 +33,7 @@
 
 <!-- 3. Sovellusinfra -->
 <script defer src="app.js"></script>
+<script defer src="auth.js"></script>
 
 <!-- 4. Lokikirja & DB -->
 <script defer src="logbook.js"></script>
@@ -43,6 +44,7 @@
 <script defer src="ofp-parser.js"></script>
 <script defer src="ofp-data.js"></script>
 <script defer src="ofp-map.js"></script>
+<script defer src="cache.js"></script>
 <script defer src="weather.js"></script>
 <script defer src="weekview.js"></script>
 <script defer src="roster.js"></script>
@@ -681,12 +683,14 @@ const _boot = (() => {
 })();
 window._boot = _boot;
 
-/* BOOT · DOMContentLoaded */
+/* BOOT · DOMContentLoaded (3-vaiheinen kevennetty käynnistys) */
 document.addEventListener('DOMContentLoaded', async () => {
   const boot = window._boot;
   const _bootSafety = setTimeout(() => boot?.hide(), 10000); // 10s fallback
 
-  // 1. IndexedDB
+  // ==========================================
+  // VAIHE 1: KRIITTINEN (Pakollinen ennen UI:ta)
+  // ==========================================
   boot?.setStep('db', 'active');
   if (typeof dbInit === 'function') {
     try {
@@ -696,65 +700,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) { boot?.setStep('db', 'error'); }
   } else { boot?.setStep('db', 'done'); }
 
-  // 2. Käyttäjä
   boot?.setStep('user', 'active');
   boot?.setSub('Loading user profile…');
-  hydrateUser();
+  await hydrateUser();
   hydrateSettingsTab();
   updateTopbarTokenWarning();
   boot?.setStep('user', 'done');
-
-  // 3. Lentokenttätietokanta
-  boot?.setStep('airports', 'active');
-  boot?.setSub('Loading airports database…');
-  if (typeof initAirportDB === 'function') {
-    initAirportDB().then(() => boot?.setStep('airports', 'done')).catch(() => boot?.setStep('airports', 'error'));
-  } else { boot?.setStep('airports', 'done'); }
 
   if (typeof pdfjsLib !== 'undefined') {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   }
 
-  // 4. Roster
-  boot?.setStep('roster', 'active');
-  boot?.setSub('Fetching roster…');
-  if (typeof autoLoadMonthRoster === 'function') {
-    try {
-      await Promise.race([autoLoadMonthRoster(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
-      boot?.setStep('roster', 'done');
-    } catch (e) { boot?.setStep('roster', 'done'); }
-  } else { boot?.setStep('roster', 'done'); }
-
-  // 5. Kartta
+  // ==========================================
+  // VAIHE 2: NÄKYVÄ (Kartta ja reitti heti näkyviin)
+  // ==========================================
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
   if (typeof _initHomeDashboard === 'function') {
     _initHomeDashboard('boot').then(() => boot?.setStep('map', 'done')).catch(() => boot?.setStep('map', 'done'));
   } else { boot?.setStep('map', 'done'); }
 
-  // 6. Reitti (cache-first + fresh)
   boot?.setStep('route', 'active');
-  boot?.setSub('Preparing route…');
-  try {
-    // a) Piirrä cachesta heti (synkroninen, nopea)
-    if (typeof renderHomeRouteFromCache === 'function') {
-      renderHomeRouteFromCache();
-    }
-    // b) Odota tuore piirto max 3s
-    if (typeof waitForHomeRouteReady === 'function') {
-      await Promise.race([
-        waitForHomeRouteReady(),
-        new Promise(r => setTimeout(r, 3000))
-      ]);
-    }
-  } catch (e) {}
   boot?.setStep('route', 'done');
 
-  // Häivytys
+  // Piilotetaan latausruutu heti, kun kartta on saatu piirrettyä!
   clearTimeout(_bootSafety);
   boot?.setSub('Ready');
-  setTimeout(() => boot?.hide(), 800);
+  setTimeout(() => boot?.hide(), 300); 
+
+  // ==========================================
+  // VAIHE 3: TAUSTATYÖT (Eivät blokkaa käyttöliittymää)
+  // ==========================================
+  
+  // Lentokenttätietokanta (hidas lataus, tehdään taustalla)
+  boot?.setStep('airports', 'active');
+  if (typeof initAirportDB === 'function') {
+    initAirportDB().then(() => boot?.setStep('airports', 'done')).catch(() => boot?.setStep('airports', 'error'));
+  } else { boot?.setStep('airports', 'done'); }
+
+  // Rosterin haku (hidas API-kutsu, tehdään taustalla)
+  boot?.setStep('roster', 'active');
+  if (typeof autoLoadMonthRoster === 'function') {
+    autoLoadMonthRoster().then(() => boot?.setStep('roster', 'done')).catch(() => boot?.setStep('roster', 'done'));
+  } else { boot?.setStep('roster', 'done'); }
 });
+
 </script>
 </body>
 </html>
