@@ -41,10 +41,13 @@
 
 <!-- 5. Muut moduulit -->
 <script defer src="map.js"></script>
+<script defer src="location.js"></script>
 <script defer src="ofp-parser.js"></script>
 <script defer src="ofp-data.js"></script>
 <script defer src="ofp-map.js"></script>
 <script defer src="cache.js"></script>
+<script defer src="waypoint-log.js"></script>
+<script defer src="ofp-finalize.js"></script>
 <script defer src="weather.js"></script>
 <script defer src="weekview.js"></script>
 <script defer src="roster.js"></script>
@@ -197,18 +200,14 @@
 
   <!-- WEATHER -->
   <section class="tab-panel" id="tab-weather">
-    <div class="section-head"><h2>Sää &amp; NOTAMit</h2></div>
+    <div class="section-head"><h2>Sää</h2></div>
     <div class="card">
-      <div class="card-label">METAR / TAF</div>
+      <div class="card-label">METAR</div>
       <div class="row-flex">
         <input type="text" id="wx-icao" placeholder="ICAO (esim. UAAA)" maxlength="4" class="mono" style="text-transform:uppercase;">
         <button class="btn-primary" onclick="loadWeatherForStation()">Hae</button>
       </div>
       <pre id="wx-output" class="wx-output">–</pre>
-    </div>
-    <div class="card">
-      <div class="card-label">NOTAM</div>
-      <pre id="notam-output" class="wx-output">–</pre>
     </div>
   </section>
 
@@ -236,13 +235,9 @@
 
     <div class="card">
       <div class="card-label">SKYPLAN REFRESH TOKEN</div>
-      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">
-        Avaa Skyplan-app → 5× tap näyttöön → debug → etsi <span class="mono">POST /api/v1/auth/refresh-token</span>.
-      </div>
       <textarea id="skyplan_refresh_token_input" class="mono" rows="3" placeholder="eyJhbGciOiJIUzUxMiIs..." style="width:100%; padding:10px; border-radius:8px; background:var(--input); color:var(--text); border:1px solid var(--border); font-size:11px; box-sizing:border-box; word-break:break-all;"></textarea>
       <div id="refresh-token-status" style="margin-top:10px; font-size:12px;"></div>
       <div class="row-flex end">
-        <button class="btn-ghost" onclick="clearRefreshToken()">Poista</button>
         <button class="btn-primary" onclick="saveRefreshToken()">Tallenna</button>
       </div>
     </div>
@@ -259,15 +254,6 @@
       <div class="kv"><span>Employee ID</span><span id="settings-empid" class="mono">–</span></div>
       <div class="kv"><span>Versio</span><span id="settings-version" class="mono">–</span></div>
       <div class="kv"><span>Build</span><span id="settings-build" class="mono">–</span></div>
-    </div>
-
-    <div class="card">
-      <div class="card-label">LOKIKIRJAN VARMUUSKOPIO</div>
-      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">Vie lokikirja JSON-tiedostona. Voit palauttaa sen myöhemmin millä tahansa laitteella.</div>
-      <div class="row-flex">
-        <button class="btn-primary" onclick="exportLogbookJSON()">⬆ Vie iCloud / Drive</button>
-        <button class="btn-ghost" onclick="importLogbookJSON()">⬇ Palauta tiedostosta</button>
-      </div>
     </div>
 
     <div class="card">
@@ -419,7 +405,8 @@ function tickClock() {
   const el = document.getElementById('live-clock');
   if (!el) return;
   const now = new Date();
-  el.textContent = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  el.textContent = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+  el.title = 'UTC';
 }
 setInterval(tickClock, 1000);
 tickClock();

@@ -87,6 +87,10 @@ function _fmtWind(wdir, wspd, wgst) {
 }
 
 function _fmtVis(visib, rawOb) {
+  // CAVOK = Ceiling And Visibility OK → aina ≥10 km, ei matalia pilviä
+  if (rawOb && /\bCAVOK\b/i.test(rawOb)) return '10+ km';
+  // SKC / NSC / NCD = ei merkittäviä pilviä, mutta näkyvyys luetaan silti
+  // (nämä eivät vaikuta näkyvyyteen, joten jatketaan normaalia käsittelyä)
   if (rawOb) {
     const mMetric = rawOb.match(/\s(\d{4})\s/);
     if (mMetric) {
@@ -269,6 +273,16 @@ async function loadWeatherForStation() {
 }
 window.loadWeatherForStation = loadWeatherForStation;
 
+function _haversineNM(lat1, lon1, lat2, lon2) {
+  const R = 3440.065; // Earth radius in NM
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 /* ==============================================================
  * ETUSIVUN DASHBOARD
  * ============================================================== */
@@ -337,15 +351,60 @@ function _findCurrentAndNextFlights() {
   return { current: current?.f || null, next: upcoming?.f || null };
 }
 
+function _findNearestAirport(flight, airports, depIcao, arrIcao) {
+  if (!flight || !Array.isArray(airports) || !airports.length) return null;
+
+  const stdMs = new Date(flight.StdLt || flight.Std || 0).getTime();
+  const staMs = new Date(flight.StaLt || flight.Sta || 0).getTime();
+  if (!stdMs || !staMs || Date.now() < stdMs || Date.now() > staMs + 30 * 60 * 1000) {
+    return null; // Ei käynnissä
+  }
+
+  // 1. GPS-sijainti jos saatavilla
+  let currentPos = null;
+  if (typeof LocationService !== 'undefined' && LocationService.getLast) {
+    const gps = LocationService.getLast();
+    if (gps && isFinite(gps.lat) && isFinite(gps.lon)) {
+      currentPos = { lat: gps.lat, lon: gps.lon, source: 'gps' };
+    }
+  }
+
+  // 2. Fallback: aikapohjainen estimaatti
+  if (!currentPos) {
+    const depCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(depIcao) : null;
+    const arrCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(arrIcao) : null;
+    if (!depCoords || !arrCoords) return null;
+
+    const progress = Math.max(0, Math.min(1, (Date.now() - stdMs) / (staMs - stdMs)));
+    currentPos = {
+      lat: depCoords.lat + (arrCoords.lat - depCoords.lat) * progress,
+      lon: depCoords.lon + (arrCoords.lon - depCoords.lon) * progress,
+      source: 'estimate'
+    };
+  }
+
+  // 3. Lähin — DEP ja DEST mukaan lukien
+  let nearest = null;
+  let minDist = Infinity;
+
+  for (const apt of airports) {
+    if (!apt.coords || !isFinite(apt.coords.lat) || !isFinite(apt.coords.lon)) continue;
+
+    const dist = _haversineNM(currentPos.lat, currentPos.lon, apt.coords.lat, apt.coords.lon);
+    if (dist < minDist) {
+      minDist = dist;
+      nearest = { airport: apt, distance: dist };
+    }
+  }
+
+  if (!nearest) return null;
+  return { ...nearest, source: currentPos.source };
+}
+
 async function renderHomeDashboard() {
-  // Tyhjennä edelliset intervallit
   if (window._standRefreshTimer) {
     clearInterval(window._standRefreshTimer);
     window._standRefreshTimer = null;
-  }
-  if (window._homeCountdownTimer) {
-    clearInterval(window._homeCountdownTimer);
-    window._homeCountdownTimer = null;
   }
 
   const { current, next } = _findCurrentAndNextFlights();
@@ -373,18 +432,21 @@ async function renderHomeDashboard() {
   const arr = String(flight.ArrivalStationIcaoCode || flight.ArrivalStationCode || '').toUpperCase();
   const std = _homeFmtTime(flight.StdLt || flight.Std);
   const sta = _homeFmtTime(flight.StaLt || flight.Sta);
-  const reg = String(flight.RegistrationNumber || flight.AircraftDescription || 'TBA').trim();
-  const stand = (typeof extractStandNumber === 'function') ? extractStandNumber(flight, null) : null;
+  const tailNumber = String(flight.RegistrationNumber || '').trim();
+  const reg = String(tailNumber || flight.AircraftDescription || 'TBA').trim();
+  const canOpenDefects = tailNumber && tailNumber !== '-' && tailNumber !== 'TBA';
 
+  /* FIX #3: aseta globaalit finalizeOFP:ää varten */
+  window._lastFlightNumber = flightNum;
+  window._lastFlightId = fid;
+
+  const regSafe = String(reg)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const stand = (typeof extractStandNumber === 'function') ? extractStandNumber(flight, null) : null;
   const stdMs = new Date(flight.StdLt || flight.Std || 0).getTime();
   const now = Date.now();
-  let countdownStr = '';
-  if (stdMs > now) {
-    const diff = stdMs - now;
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    countdownStr = h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`;
-  }
 
   overlayEl.innerHTML = `
     <div class="hm-route">
@@ -393,27 +455,41 @@ async function renderHomeDashboard() {
       <button class="hm-icao hm-icao-arr" data-icao="${arr}" type="button">${arr}</button>
       <span class="hm-flight">${flightNum}</span>
     </div>
-    <div class="hm-info">
+    <div class="hm-info" id="hm-info-primary">
+            <button type="button" class="hm-takeoff-btn"
+          style="background:rgba(0,194,255,0.08); border:1px solid var(--border-2);
+                color:var(--accent); padding:6px 12px; border-radius:6px;
+                font-size:11.5px; font-weight:600; cursor:pointer;"
+          onclick="if (typeof showTakeoffModal === 'function') showTakeoffModal()">
+          ✈️
+        </button>
       <div class="hm-info-item">
         <span class="hm-info-label">Aika</span>
         <span class="hm-info-value">${std} → ${sta}</span>
       </div>
       <div class="hm-info-item">
         <span class="hm-info-label">Kone</span>
-        <span class="hm-info-value">${reg}</span>
+        <span class="hm-info-value">
+          ${canOpenDefects
+            ? `<button type="button" data-reg="${regSafe}"
+                 style="background:none; border:none; padding:0; margin:0;
+                        color:var(--accent); font-family:inherit; font-size:inherit;
+                        font-weight:inherit; line-height:inherit; cursor:pointer;
+                        text-decoration:underline; text-underline-offset:2px;">${regSafe}</button>`
+            : regSafe}
+        </span>
       </div>
       <div class="hm-info-item" id="hm-stand-item" ${stand ? '' : 'style="display:none;"'}>
         <span class="hm-info-label">Stand</span>
         <span class="hm-info-value" id="hm-stand-value">${stand ? stand.value : '–'}</span>
       </div>
     </div>
-    ${countdownStr ? `<div class="hm-countdown">
-      <span class="hm-countdown-label">Lähtöön</span>
-      <span class="hm-countdown-value">${countdownStr}</span>
-    </div>` : ''}
+        <div style="margin-top:8px; text-align:right;">
+
+    </div>
   `;
 
-  // Auringonnousu/lasku
+  // Auringonnousu/lasku (ennallaan)
   if (typeof SunCalc !== 'undefined') {
     const depCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(dep) : null;
     const arrCoords = (typeof _icaoCoords === 'function') ? _icaoCoords(arr) : null;
@@ -427,7 +503,6 @@ async function renderHomeDashboard() {
         offset
       };
     };
-
     const sunRows = [];
     if (depCoords) {
       const t = SunCalc.getTimes(new Date(), depCoords.lat, depCoords.lon);
@@ -457,14 +532,13 @@ async function renderHomeDashboard() {
 
   overlayEl.style.display = 'flex';
 
-  // Stand-päivitys
+  // Stand-päivitys (ennallaan)
   if (navigator.onLine && typeof refreshSingleFlightFromRoster === 'function') {
     (async () => {
       try {
         const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
         if (!fresh) return;
-        const newStand = (typeof extractStandNumber === 'function')
-          ? extractStandNumber(fresh, null) : null;
+        const newStand = (typeof extractStandNumber === 'function') ? extractStandNumber(fresh, null) : null;
         const oldVal = stand ? stand.value : '';
         if (newStand && newStand.value && newStand.value !== oldVal) {
           const valEl = document.getElementById('hm-stand-value');
@@ -473,8 +547,7 @@ async function renderHomeDashboard() {
           if (itemEl) itemEl.style.display = '';
           try {
             const roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-            const idx = roster.findIndex(x =>
-              String(x.ID || x.id || x.FlightID) === String(fid));
+            const idx = roster.findIndex(x => String(x.ID || x.id || x.FlightID) === String(fid));
             if (idx >= 0) {
               roster[idx] = { ...roster[idx], ...fresh };
               localStorage.setItem('assigned_flights_cache', JSON.stringify(roster));
@@ -495,8 +568,7 @@ async function renderHomeDashboard() {
         try {
           const fresh = await refreshSingleFlightFromRoster(fid, flight.StdLt || flight.Std);
           if (!fresh) return;
-          const newStand = (typeof extractStandNumber === 'function')
-            ? extractStandNumber(fresh, null) : null;
+          const newStand = (typeof extractStandNumber === 'function') ? extractStandNumber(fresh, null) : null;
           if (!newStand || !newStand.value) return;
           const valEl = document.getElementById('hm-stand-value');
           const itemEl = document.getElementById('hm-stand-item');
@@ -509,7 +581,6 @@ async function renderHomeDashboard() {
     }
   }
 
-  // Kartan optiot — mobiililla light mode
   const _isMobile = /iPad|iPhone|iPod|Android/i.test(navigator.userAgent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -525,6 +596,7 @@ async function renderHomeDashboard() {
     date: new Date(),
     margin: 20,
     flight,
+    flightId: fid,
     onMarkerClick: (airport, evt) => {
       const rect = cardEl.getBoundingClientRect();
       const px = evt ? (evt.clientX - rect.left) : cardEl.clientWidth / 2;
@@ -533,19 +605,59 @@ async function renderHomeDashboard() {
     }
   };
 
-  // Renderöi kartta HETI
   if (typeof renderFlightMap === 'function') {
     await renderFlightMap(mapEl, dep, arr, mapOpts);
   }
 
-  // Lataa OFP-data + WX taustalla
-    // ============ Lataa OFP-data + WX taustalla ============
+  /* FIX #2: altista "Lähin"-päivitys globaalisti — mock-GPS voi kutsua tätä */
+  window._updateNearestAirport = function () {
+    if (typeof _findNearestAirport !== 'function') return;
+    overlayEl.querySelector('#hm-nearest-item')?.remove();
+
+    const nearestInfo = _findNearestAirport(flight, notamAirports, dep, arr);
+    if (!nearestInfo) return;
+
+    const target = overlayEl.querySelector('#hm-info-primary');
+    if (!target) return;
+
+    const distStr = Math.round(nearestInfo.distance) + ' NM';
+    const icaoSafe = String(nearestInfo.airport.icao || '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    target.insertAdjacentHTML('beforeend', `
+      <div class="hm-info-item" id="hm-nearest-item">
+        <span class="hm-info-label">📍 Lähin</span>
+        <span class="hm-info-value">
+          <button type="button" class="hm-nearest-btn" data-icao="${icaoSafe}"
+            style="background:none; border:none; padding:0; margin:0;
+                   color:var(--accent); font-family:inherit; font-size:inherit;
+                   font-weight:inherit; line-height:inherit; cursor:pointer;
+                   text-decoration:underline; text-underline-offset:2px;">
+            ${icaoSafe} · ${distStr}
+          </button>
+        </span>
+      </div>
+    `);
+
+    const btn = target.querySelector('.hm-nearest-btn');
+    if (btn) {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const icao = btn.dataset.icao;
+        const apt = notamAirports.find(a => a.icao === icao)
+                 || _findAirportForIcao(icao, flight, notamAirports);
+        const pos = mapEl._getMarkerPosition ? mapEl._getMarkerPosition(icao) : null;
+        const px = pos ? pos.x : cardEl.clientWidth - 200;
+        const py = pos ? pos.y : cardEl.clientHeight / 2;
+        showAirportPopupInline(apt, { x: px, y: py }, cardEl, notamAirports);
+      });
+    }
+  };
+
+  // Asynkroninen OFP/NOTAM/WX-lataus
   (async () => {
     const loadGen = ++_homeLoadGen;
 
-    /* --------------------------------------------------------
-     * Onko data jo cachessa? Jos on → älä näytä loading-modalia
-     * -------------------------------------------------------- */
     let skipLoader = false;
     try {
       const wpCache = JSON.parse(localStorage.getItem('notam_wp_cache_v3') || '{}');
@@ -559,12 +671,6 @@ async function renderHomeDashboard() {
       if (wpFresh && notamFresh) skipLoader = true;
     } catch (e) {}
 
-    /* --------------------------------------------------------
-     * Viivästetty loading-modal (300 ms)
-     * - Nopea lataus (cache) ei väläytä
-     * - Hidas lataus näyttää selvän indikaattorin
-     * - 15 s safety-timeout estää ikuisen spinnerin
-     * -------------------------------------------------------- */
     let loaderShown = false;
     let loaderTimer = null;
     let loaderSafetyTimer = null;
@@ -572,14 +678,8 @@ async function renderHomeDashboard() {
     if (!skipLoader && typeof showModalLoader === 'function') {
       loaderTimer = setTimeout(() => {
         if (loadGen !== _homeLoadGen) return;
-
-        showModalLoader(
-          'Ladataan reittiä…',
-          `${flightNum} · ${dep} → ${arr}`
-        );
+        showModalLoader('Ladataan reittiä…', `${flightNum} · ${dep} → ${arr}`);
         loaderShown = true;
-
-        // Safety: piilota 15 s kuluttua vaikka pyyntö olisi kesken
         loaderSafetyTimer = setTimeout(() => {
           if (typeof hideModalLoader === 'function') hideModalLoader();
           loaderShown = false;
@@ -588,7 +688,7 @@ async function renderHomeDashboard() {
     }
 
     try {
-            // 1. NOTAMit — älä koskaan jätä notamAirportsia tyhjäksi
+      // 1. NOTAMit
       let notams = [];
       try {
         if (typeof parseOFPsForNotams === 'function' && fid && !_ofpLoadFailed[fid]) {
@@ -608,10 +708,15 @@ async function renderHomeDashboard() {
         }
       }
 
-      // 2. Rakenna kenttälista AINA (DEP/DEST mukana vaikka NOTAMit puuttuisivat)
+      // 2. Rakenna kenttälista
       if (typeof buildAirportData === 'function') {
         notamAirports = buildAirportData(notams, flight);
         extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
+      }
+
+      // 2b. Lähin lentokenttä
+      if (typeof window._updateNearestAirport === 'function') {
+        try { window._updateNearestAirport(); } catch (e) { console.warn('[Nearest]', e); }
       }
 
       // 3. Waypointit
@@ -620,6 +725,7 @@ async function renderHomeDashboard() {
           const wpData = await parseOFPsForWaypoints(fid);
           if (loadGen !== _homeLoadGen) return;
           waypointList = wpData.waypoints || [];
+          window._allOFPWaypoints = wpData.allWaypoints || wpData.waypoints || [];
         }
       } catch (e) {
         const msg = String(e?.message || '');
@@ -637,21 +743,47 @@ async function renderHomeDashboard() {
       if (loadGen !== _homeLoadGen) return;
       if (waypointList.length > 0 || extraAirports.length > 0) {
         if (typeof renderFlightMap === 'function') {
-          renderFlightMap(mapEl, dep, arr, {
+          await renderFlightMap(mapEl, dep, arr, {
             ...mapOpts,
             extraAirports,
             waypoints: waypointList
           });
+
+          if (waypointList.length > 0 && typeof startWaypointGPSWatch === 'function') {
+            startWaypointGPSWatch(fid, waypointList);
+          }
         }
       }
 
-      // 5. WX-lataus kaikille kentille (DEP/DEST mukaan lukien) + re-render
+      /* FIX #1: oikea fuel-parsinta OFP:stä */
+      try {
+        const journeyLog = (typeof getCachedJourneyLog === 'function') ? getCachedJourneyLog(fid) : null;
+        const takeoffIso = journeyLog?.takeoff || journeyLog?.atd || null;
+
+        let takeoffFuelKg = null;
+        if (typeof getOFPFuelData === 'function') {
+          const fuel = await getOFPFuelData(fid).catch(() => null);
+          if (fuel?.takeoffFuel) takeoffFuelKg = fuel.takeoffFuel;
+        }
+
+        if (takeoffIso || takeoffFuelKg != null) {
+          Cache.set(`flight:context:${fid}`, {
+            takeoffIso, takeoffFuelKg
+          }, { ttlMs: 24 * 60 * 60 * 1000, mode: 'persist' });
+          console.log('[HomeMap] Context saved:', { takeoffIso, takeoffFuelKg });
+        }
+      } catch (e) {
+        console.warn('[HomeMap] Context save failed:', e);
+      }
+
+      // 5. WX-lataus + re-render
       if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
         try {
           await _preloadWxForAirports(notamAirports);
           if (loadGen !== _homeLoadGen) return;
           if (typeof renderFlightMap === 'function') {
-            renderFlightMap(mapEl, dep, arr, {
+            /* FIX #4: await — varmistaa että kaikki on tehty ennen paluuta */
+            await renderFlightMap(mapEl, dep, arr, {
               ...mapOpts,
               extraAirports,
               waypoints: waypointList
@@ -659,11 +791,7 @@ async function renderHomeDashboard() {
           }
         } catch (e) {}
       }
-
     } finally {
-      /* --------------------------------------------------------
-       * Siivoa loading-modal
-       * -------------------------------------------------------- */
       if (loaderTimer) clearTimeout(loaderTimer);
       if (loaderSafetyTimer) clearTimeout(loaderSafetyTimer);
       if (loaderShown && typeof hideModalLoader === 'function') {
@@ -672,11 +800,23 @@ async function renderHomeDashboard() {
     }
   })();
 
-  // DEP/DEST-nappien klikkaus
-  overlayEl.querySelectorAll('.hm-icao').forEach(btn => {
+  // Klikkauskäsittelijät
+  overlayEl.querySelectorAll('.hm-icao, [data-reg]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
+
+      if (btn.dataset.reg) {
+        const tail = btn.dataset.reg;
+        if (typeof showDefectsPopup === 'function' && tail) {
+          showDefectsPopup(tail);
+        } else if (typeof showToast === 'function') {
+          showToast('Vikatietopalvelu ei ole ladattu.', 'warning');
+        }
+        return;
+      }
+
       const icao = btn.dataset.icao;
+      if (!icao) return;
       const apt = _findAirportForIcao(icao, flight, notamAirports);
       const pos = mapEl._getMarkerPosition ? mapEl._getMarkerPosition(icao) : null;
       const px = pos ? pos.x : cardEl.clientWidth - 200;
@@ -684,23 +824,8 @@ async function renderHomeDashboard() {
       showAirportPopupInline(apt, { x: px, y: py }, cardEl, notamAirports);
     });
   });
-
-  // Countdown
-  const stdMsFinal = new Date(flight.StdLt || flight.Std || 0).getTime();
-  window._homeCountdownTimer = setInterval(() => {
-    const el = document.querySelector('.hm-countdown-value');
-    if (!el) return;
-    const diff = stdMsFinal - Date.now();
-    if (diff <= 0) { el.textContent = 'LÄHTÖ'; return; }
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    el.textContent = h > 0
-      ? `${h}h ${String(m).padStart(2, '0')}m`
-      : `${m} min`;
-  }, 30000);
 }
 window.renderHomeDashboard = renderHomeDashboard;
-
 
 /* ==============================================================
  * Kartan sisäinen popup

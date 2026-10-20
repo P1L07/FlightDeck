@@ -81,6 +81,46 @@ async function getPDFLinesForFlight(fid, options = {}) {
 }
 window.getPDFLinesForFlight = getPDFLinesForFlight;
 
+/* ==============================================================
+ * OFP-FUEL · polttoainetiedot PDF:stä
+ * ==============================================================
+ * Palauttaa { blockFuel, taxi, trip, minBlock, takeoffFuel } kg.
+ * takeoffFuel = blockFuel - taxi (käytetään EFOB-laskennassa).
+ * ============================================================== */
+async function getOFPFuelData(fid) {
+  if (!fid) return null;
+  try {
+    const lines = await getPDFLinesForFlight(fid);
+    const out = { blockFuel: 0, taxi: 0, trip: 0, minBlock: 0, takeoffFuel: 0 };
+
+    for (const line of lines) {
+      if (out.blockFuel === 0) {
+        const m = line.match(/BLOCK\s+FUEL\s+(\d{1,2}[.:]\d{2})\s+(\d+)/i);
+        if (m) out.blockFuel = parseInt(m[2], 10) || 0;
+      }
+      if (out.taxi === 0) {
+        const m = line.match(/^TAXI\s+(\d+)/i);
+        if (m) out.taxi = parseInt(m[1], 10) || 0;
+      }
+      if (out.trip === 0) {
+        const m = line.match(/^TRIP\s+(\d{1,2}[.:]\d{2})\s+(\d+)/i);
+        if (m) out.trip = parseInt(m[2], 10) || 0;
+      }
+      if (out.minBlock === 0) {
+        const m = line.match(/MINIMUM\s+BLOCK\s+(\d+)/i);
+        if (m) out.minBlock = parseInt(m[1], 10) || 0;
+      }
+    }
+
+    out.takeoffFuel = Math.max(0, out.blockFuel - out.taxi);
+    return out;
+  } catch (e) {
+    console.warn('[OFP-Fuel] parse failed:', e.message);
+    return null;
+  }
+}
+window.getOFPFuelData = getOFPFuelData;
+
 window._invalidatePDFLinesCache = function(fid) {
   const key = String(fid);
   _pdfLinesCache.delete(key);
@@ -326,7 +366,6 @@ async function parseOFPsForNotams(flightId) {
   // Tallenna localStorageen
   Cache.set(`notam:ofp:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
   return data;
-
 }
 window.parseOFPsForNotams = parseOFPsForNotams;
 
@@ -599,25 +638,30 @@ window.parseAllWaypoints = parseAllWaypoints;
 /* ==============================================================
  * Pääfunktio: parseOFPsForWaypoints
  * ============================================================== */
-async function parseOFPsForWaypoints(flightId) {
+async function parseOFPsForWaypoints(flightId, forceRefresh = false) {
   const fid = String(flightId || '');
   if (!fid) throw new Error('Ei Flight ID:tä');
 
-  // Cache
-  try {
-    const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
-    const hit = cache[fid];
-    if (hit && (Date.now() - new Date(hit.at).getTime()) < NOTAM_WP_CACHE_TTL) {
-      return hit.data;
-    }
-  } catch (e) {}
+  // Cache (ohitetaan, jos forceRefresh on true)
+  if (!forceRefresh) {
+    try {
+      const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
+      const hit = cache[fid];
+      if (hit && (Date.now() - new Date(hit.at).getTime()) < NOTAM_WP_TTL) {
+        if (hit.data && hit.data.allWaypoints) {
+          return hit.data;
+        }
+      }
+    } catch (e) {}
+  }
 
   let entry;
   try {
     entry = await _getPDFBytesForFlight(fid);
-    } catch (err) {
+  } catch (err) {
+    // ... (säilytä vanha 422-käsittely tässä) ...
     if (err.code === 'OFP_NOT_AVAILABLE' || String(err.message).includes('422')) {
-      const data = { flightId: fid, waypoints: [], destRoute: '', at: new Date().toISOString(), is422: true };
+      const data = { flightId: fid, waypoints: [], allWaypoints: [], destRoute: '', at: new Date().toISOString(), is422: true };
       try {
         const cache = JSON.parse(localStorage.getItem(NOTAM_WP_CACHE_KEY) || '{}');
         cache[fid] = { at: new Date().toISOString(), data };
@@ -627,14 +671,19 @@ async function parseOFPsForWaypoints(flightId) {
     }
     throw err;
   }
+
   const bufferCopy = entry.bytes.slice ? entry.bytes.slice(0) : entry.bytes;
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(bufferCopy) }).promise;
 
+  // KORJATTU: Määritellään allWaypoints oikein
   let waypoints = [];
+  let allWaypoints = []; // <-- Ei enää const!
   let destRoute = '';
 
   try {
     waypoints = await parseAllWaypoints(pdf);
+    allWaypoints = [...waypoints]; // <-- Kopioidaan vasta parsinnan JÄLKEEN
+
 
     /* --- Hae DEST ROUTE tekstistä (sivut 1–3) --- */
     if (typeof extractRoutes === 'function' && typeof getLinesFromPDFPage === 'function') {
@@ -715,6 +764,7 @@ async function parseOFPsForWaypoints(flightId) {
   const data = {
     flightId: fid,
     waypoints,
+    allWaypoints, 
     destRoute,
     at: new Date().toISOString()
   };

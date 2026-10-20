@@ -324,13 +324,24 @@ function updateTopbarCountdown() {
   }
 
   const now = Date.now();
-  const next = roster
+    const next = roster
     .filter(f => {
       const std = new Date(f.StdLt || f.Std || 0).getTime();
+      const sta = new Date(f.StaLt || f.Sta || 0).getTime();
+      if (!std) return false;
+
+      // 1. Tuleva lento (15 min grace ennen lähtöä)
       if (std > now - 15 * 60 * 1000) return true;
+
+      // 2. Käynnissä oleva lento (STD < nyt < STA + 30 min grace)
+      if (std <= now && sta && now < sta + 30 * 60 * 1000) return true;
+
+      // 3. Journey-log kertoo että lennolla (ATD asetettu, ATA ei)
       const fid = String(f.ID || f.id || f.FlightID || '');
       const log = _getCachedJourneyLog(fid);
-      return log?.atd && !log?.ata;
+      if (log?.atd && !log?.ata) return true;
+
+      return false;
     })
     .sort((a, b) =>
       new Date(a.StdLt || a.Std || 0) - new Date(b.StdLt || b.Std || 0))[0];

@@ -1119,9 +1119,41 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
       throw new Error("Document data is empty or corrupt.");
     }
 
-    pdfUrl = URL.createObjectURL(pdfBlob);
-
+        // Ennen pdfUrl-luontia:
     let statusTag = '';
+
+    // Onko waypoint-lokeja jo olemassa? → viimeistele automaattisesti
+    const hasSavedLogs = (() => {
+      if (typeof getAllWaypointLogs !== 'function') return false;
+      try {
+        const logs = getAllWaypointLogs(flightId);
+        return Object.values(logs).some(l => l.ato || l.fob || l.efob);
+      } catch (e) { return false; }
+    })();
+
+    if (hasSavedLogs && typeof finalizeOFP === 'function') {
+      try {
+        const finalizedBytes = await finalizeOFP(flightId, { download: false, silent: true });
+        if (finalizedBytes) {
+          downloadedBytes = finalizedBytes;
+          pdfBlob = new Blob([finalizedBytes], { type: 'application/pdf' });
+          statusTag = ' <span style="color: var(--success); font-size: 11px; font-weight: bold; margin-left: 8px;">✏️ Täytetty</span>';
+        }
+      } catch (e) {
+        console.warn('[Preview] Auto-finalize failed:', e);
+      }
+    }
+
+    pdfUrl = URL.createObjectURL(pdfBlob);
+    // (poista tämä rivi alemmasta koodista: let statusTag = '')
+    if (!statusTag) {
+      if (isCached) {
+        statusTag = ' <span style="color: #ffb300; font-size: 11px; font-weight: bold; margin-left: 8px;">⚡Cache</span>';
+      } else if (isFinalized) {
+        statusTag = ' <span style="color: var(--success); font-size: 11px; font-weight: bold; margin-left: 8px;">✔ (Finalized)</span>';
+      }
+    }
+
     if (isCached) {
       statusTag = ' <span style="color: #ffb300; font-size: 11px; font-weight: bold; margin-left: 8px;">⚡Cache</span>';
     } else if (isFinalized) {
@@ -1145,8 +1177,43 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
       compact: true
     };
 
-    modalConfig.confirmText = 'Sulje';
-    modalConfig.onConfirm = () => cleanupUrl();
+    // Lisää "Viimeistele"-nappi jos OFP on finalisoitu ja waypoint-dataa on
+    // Tallenna flight-numero ja -id jatkoja varten
+    window._lastFlightNumber = flightNum;
+    window._lastFlightId = flightId;
+
+    const hasWaypointLogs = (() => {
+      if (typeof getAllWaypointLogs !== 'function') return false;
+      try {
+        return Object.keys(getAllWaypointLogs(flightId)).length > 0;
+      } catch (e) { return false; }
+    })();
+
+    if (hasWaypointLogs && typeof finalizeOFP === 'function') {
+      modalConfig.confirmText = 'Sulje';
+      modalConfig.cancelText = '✏️ Viimeistele';
+      modalConfig.onCancel = async () => {
+        cleanupUrl();
+        try {
+          await finalizeOFP(flightId, { download: true });
+        } catch (e) {
+          if (typeof createModal === 'function') {
+            createModal({
+              title: 'Viimeistely epäonnistui',
+              message: e.message,
+              type: 'error',
+              icon: '⚠️',
+              confirmText: 'OK',
+              compact: true
+            });
+          }
+        }
+      };
+      modalConfig.onConfirm = () => cleanupUrl();
+    } else {
+      modalConfig.confirmText = 'Sulje';
+      modalConfig.onConfirm = () => cleanupUrl();
+    }
 
     if (typeof createModal === 'function') {
       createModal(modalConfig);

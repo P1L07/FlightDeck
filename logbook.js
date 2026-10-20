@@ -1042,7 +1042,7 @@ function showLogbookEntryDetail(id) {
   `;
 
   createModal({
-    title: `Kirjaus · ${e.skyplan?.flightNumber || ''}`,
+    title: `${e.skyplan?.flightNumber || ''}`,
     icon: '📄',
     bodyHTML: body,
     confirmText: 'Sulje',
@@ -1272,11 +1272,11 @@ function promptLogbookSignature(entryId) {
     `;
 
     createModal({
-      title: 'Sign Logbook Entry',
+      title: 'Allekirjoita lento',
       icon: '✍️',
       bodyHTML,
-      confirmText: 'Sign & Save',
-      cancelText: 'Cancel',
+      confirmText: 'Tallenna',
+      cancelText: 'Peruuta',
       maxWidth: '560px',
       compact: true,
       onConfirm: async () => {
@@ -1289,7 +1289,7 @@ function promptLogbookSignature(entryId) {
         const blank = document.createElement('canvas');
         blank.width = canvas.width; blank.height = canvas.height;
         if (dataUrl === blank.toDataURL('image/png')) {
-          if (typeof showToast === 'function') showToast('Signature required.', 'warning');
+          if (typeof showToast === 'function') showToast('Allekirjoitus vaaditaan.', 'warning');
           return false;
         }
 

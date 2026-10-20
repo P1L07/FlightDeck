@@ -516,21 +516,17 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
         lon: w.lon
       }
     }))
-    // Suodata pois DEP ja DEST, jotta ne eivät näy kahtena tekstinä
     .filter(w => {
       const wName = String(w.name || '').toUpperCase();
       const dIcao = String(depIcao || '').toUpperCase();
       const aIcao = String(arrIcao || '').toUpperCase();
-
-      // 1. Nimi täsmää DEP tai DEST
       if (wName && (wName === dIcao || wName === aIcao)) return false;
-
-      // 2. Fyysinen sijainti liian lähellä DEP tai DEST
       if (dep && d3.geoDistance([w.coords.lon, w.coords.lat], [dep.lon, dep.lat]) < 0.005) return false;
       if (arr && d3.geoDistance([w.coords.lon, w.coords.lat], [arr.lon, arr.lat]) < 0.005) return false;
-
       return true;
     });
+
+  window._lastWaypoints = wps.slice();
 
   if (!points.length) {
     container.innerHTML =
@@ -584,15 +580,14 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
     maxDist = Math.max(maxDist, distance);
   }
 
-  const initialScale = (minDim * 0.42) / Math.max(
-    Math.sin(
-      Math.min(
-        Math.max(maxDist, 0.005) * 1.25,
-        Math.PI / 2 * 0.05
-      )
-    ),
-    0.02
+  // Skaala joka sopii pisimmän pisteen ruutuun 42 %:n säteelle
+  // - Math.min(maxDist * 1.1, π/2 - 0.01) = marginaali + suoja 90°:n ylitykselle
+  // - Math.max(..., 0.005) = minimi lyhyille lennoille
+  const safeMaxDist = Math.min(
+    Math.max(maxDist, 0.005) * 1.1,
+    Math.PI / 2 - 0.01
   );
+  const initialScale = (minDim * 0.42) / Math.max(Math.sin(safeMaxDist), 0.02);
 
   const minScale = initialScale * 0.35;
   const maxScale = Math.max(
@@ -908,7 +903,59 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
       onMarkerClick(airport, event);
     });
 
-    markerNodes.push({ point, group });
+      markerNodes.push({ point, group });
+  }
+
+  /* ===================== OMA SIJAINTI ===================== */
+  let ownPositionNode = null;
+
+  if (typeof LocationService !== 'undefined' && LocationService.getLast()) {
+    ownPositionNode = markersG.append('g')
+      .attr('class', 'fm-own-position')
+      .style('pointer-events', 'none');
+
+    ownPositionNode.append('circle')
+      .attr('r', 8)
+      .attr('fill', 'rgba(0,122,255,0.15)')
+      .attr('stroke', '#007aff')
+      .attr('stroke-width', 1.5);
+
+    ownPositionNode.append('circle')
+      .attr('r', 4)
+      .attr('fill', '#007aff');
+
+    ownPositionNode.append('text')
+      .attr('x', 14)
+      .attr('y', 4)
+      .attr('fill', '#007aff')
+      .attr('font-size', 10)
+      .attr('font-family', 'monospace')
+      .attr('font-weight', 'bold')
+      .attr('paint-order', 'stroke')
+      .attr('stroke', '#000')
+      .attr('stroke-width', 2.5)
+      .text('YOU');
+  }
+
+  function updateOwnPosition() {
+    if (!ownPositionNode) return;
+    const pos = typeof LocationService !== 'undefined' ? LocationService.getLast() : null;
+    if (!pos) {
+      ownPositionNode.style('display', 'none');
+      return;
+    }
+    if (!isVisible([pos.lon, pos.lat])) {
+      ownPositionNode.style('display', 'none');
+      return;
+    }
+    const xy = projection([pos.lon, pos.lat]);
+    if (!xy || !Number.isFinite(xy[0]) || !Number.isFinite(xy[1])) {
+      ownPositionNode.style('display', 'none');
+      return;
+    }
+    ownPositionNode
+      .style('display', null)
+      .attr('transform', `translate(${xy[0]},${xy[1]})`);
   }
 
   function updateMarkers() {
@@ -946,15 +993,35 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   /* ===================== TEEKONNAPUNKTID ===================== */
 
   const wpG = content.append('g')
-    .style('pointer-events', 'none')
     .style('display', feat.waypoints ? null : 'none');
 
+  const flightIdForLogs = options.flightId
+                       || options.flight?.ID
+                       || options.flight?.id
+                       || options.flight?.FlightID
+                       || null;
+
   const wpNodes = wps.map(waypoint => {
-    const group = wpG.append('g');
+    const group = wpG.append('g')
+      .style('cursor', 'pointer');
+
+    // Onko tallennettu ATO → vihreä
+    const saved = flightIdForLogs
+      ? (typeof getWaypointLog === 'function' ? getWaypointLog(flightIdForLogs, waypoint.name) : null)
+      : null;
+    const hasAto = !!(saved?.ato);
+    const wpColor = hasAto ? '#32d74b' : 'rgba(0,194,255,0.8)';
+
+    // Laajempi läpinäkyvä klikkausalue
+    group.append('circle')
+      .attr('r', 10)
+      .attr('fill', 'transparent')
+      .style('pointer-events', 'all');
 
     group.append('circle')
       .attr('r', 3)
-      .attr('fill', 'rgba(0,194,255,0.8)');
+      .attr('fill', wpColor)
+      .style('pointer-events', 'all');
 
     const label = group.append('text')
       .attr('x', 6)
@@ -966,19 +1033,34 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
       .attr('paint-order', 'stroke')
       .attr('stroke', '#000')
       .attr('stroke-width', mobile ? 2 : 4)
-      .text(
-        waypoint.name && waypoint.name !== '?'
-          ? waypoint.name
-          : ''
-      );
+      .style('pointer-events', 'none')
+      .text(waypoint.name && waypoint.name !== '?' ? waypoint.name : '');
 
-    if (
-      !feat.waypointLabels ||
-      !waypoint.name ||
-      waypoint.name === '?'
-    ) {
+    if (!feat.waypointLabels || !waypoint.name || waypoint.name === '?') {
       label.style('display', 'none');
     }
+
+    group.on('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+
+    group.on('click', (event) => {
+      event.stopPropagation();
+
+      const fid = flightIdForLogs
+               || options.flightId
+               || options.flight?.ID
+               || null;
+
+      if (!fid) {
+        console.warn('[Map] Waypoint click: ei flightId:tä');
+        return;
+      }
+
+      if (typeof window.showWaypointPopup === 'function') {
+        window.showWaypointPopup(waypoint, fid);
+      }
+    });
 
     return { waypoint, group };
   });
@@ -1019,6 +1101,7 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
 
   updateMarkers();
   updateWaypoints();
+  updateOwnPosition();
 
   /* ===================== PUUTEJUHTIMINE ===================== */
 
@@ -1072,6 +1155,7 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
 
       updateMarkers();
       updateWaypoints();
+      updateOwnPosition();
     });
   }
 

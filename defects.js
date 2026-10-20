@@ -257,8 +257,8 @@ async function showDefectsPopup(tailNumber) {
       <div class="rcp-head">
         <div class="rcp-icon">🔧</div>
         <div class="rcp-title">
-          <div class="rcp-title-main">Koneen viat · ${_defEsc(cleanTail)}</div>
-          <div class="rcp-title-sub">ADD / CDD · Skyplan defect-reports</div>
+          <div class="rcp-title-main">${_defEsc(cleanTail)}</div>
+          <div class="rcp-title-sub">ADD / CDD</div>
         </div>
         <button class="rcp-close" type="button" aria-label="Sulje">✕</button>
       </div>
@@ -267,9 +267,6 @@ async function showDefectsPopup(tailNumber) {
           <div class="loader-spinner" style="transform:scale(0.7);"><span></span><span></span><span></span></div>
           <span style="font-size:12px; color:var(--dim);">Haetaan vikoja…</span>
         </div>
-      </div>
-      <div class="rcp-foot">
-        <button class="rcp-btn" type="button">Sulje</button>
       </div>
     </div>
   `;
@@ -283,7 +280,6 @@ async function showDefectsPopup(tailNumber) {
     setTimeout(() => overlay.remove(), 200);
   };
   overlay.querySelector('.rcp-close').addEventListener('click', close);
-  overlay.querySelector('.rcp-btn').addEventListener('click', close);
 
   requestAnimationFrame(() => overlay.classList.add('visible'));
 

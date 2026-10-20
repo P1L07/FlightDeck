@@ -2880,34 +2880,6 @@ input[type="text"]:focus, textarea:focus {
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
 }
 
-/* Countdown */
-.hm-countdown {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
-  border-radius: 12px;
-  background: rgba(0, 194, 255, 0.1);
-  border: 1px solid rgba(0, 194, 255, 0.35);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  margin-top: 4px;
-}
-.hm-countdown-label {
-  font-size: 11px;
-  letter-spacing: 1.6px;
-  text-transform: uppercase;
-  font-weight: 700;
-  color: var(--dim);
-}
-.hm-countdown-value {
-  font-family: var(--font-mono);
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--accent);
-  text-shadow: 0 0 14px rgba(0, 194, 255, 0.6);
-}
 
 /* Tyhjä-tila */
 .home-map-empty {
