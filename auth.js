@@ -144,6 +144,148 @@ function promptForTokenModal() {
   return _tokenModalPromise;
 }
 
+/* ---------------- Kirjautuminen tunnuksilla ---------------- */
+async function loginWithCredentials(username, password) {
+  await new Promise(r => setTimeout(r, 300));
+  if (!username || !password) throw new Error('Anna käyttäjätunnus ja salasana');
+
+  const resp = await fetch('https://kcskyplanapi.airastana.com/api/v1/auth/get-token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'mobile-version': '1.2.0.94'
+    },
+    body: JSON.stringify({
+      UserName: String(username).trim(),
+      Password: String(password)
+    })
+  });
+
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Väärä käyttäjätunnus tai salasana');
+  }
+  if (!resp.ok) {
+    throw new Error(`Palvelinvirhe (HTTP ${resp.status})`);
+  }
+
+  const data = await resp.json();
+  const access  = data.AccessToken  || data.accessToken  || data.access_token;
+  const refresh = data.RefreshToken || data.refreshToken || data.refresh_token;
+
+  if (!access) throw new Error('Vastauksesta puuttuu AccessToken');
+
+  try {
+    localStorage.setItem('skyplan_token', access);
+    if (refresh) {
+      localStorage.setItem('skyplan_refresh_token', refresh);
+      localStorage.setItem('skyplan_refresh_token_backup', refresh);
+    }
+  } catch (e) {}
+
+  // Uusi kirjautuminen → nollaa cooldownit
+  _refreshFailedAt = 0;
+  _lastModalShownAt = 0;
+
+  return access;
+}
+
+/* ---------------- Kirjautumismodaali ---------------- */
+let _loginModalPromise = null;
+
+function promptForLogin() {
+  if (_loginModalPromise) return _loginModalPromise;
+
+  _loginModalPromise = (async () => {
+    let waited = 0;
+    while (typeof window.createModal !== 'function' && waited < 5000) {
+      await new Promise(r => setTimeout(r, 100));
+      waited += 100;
+    }
+    if (typeof window.createModal !== 'function') {
+      console.error('[Auth] createModal puuttuu — ei voi näyttää login-modaalia');
+      _loginModalPromise = null;
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        _loginModalPromise = null;
+        resolve(v);
+      };
+
+      const bodyHTML = `
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <div style="font-size:12.5px; color:var(--dim); line-height:1.5;">
+            Kirjaudu Skyplaniin.
+          </div>
+          <div>
+            <label style="display:block; font-size:11.5px; font-weight:600; color:var(--dim); margin-bottom:4px;">Käyttäjätunnus</label>
+            <input type="text" id="login-username" autocomplete="username" autocapitalize="off" autocorrect="off"
+                   style="width:100%; padding:10px 12px; border-radius:8px; background:var(--input);
+                          color:var(--text); border:1px solid var(--border); font-size:13px; box-sizing:border-box;">
+          </div>
+          <div>
+            <label style="display:block; font-size:11.5px; font-weight:600; color:var(--dim); margin-bottom:4px;">Salasana</label>
+            <input type="password" id="login-password" autocomplete="current-password"
+                   style="width:100%; padding:10px 12px; border-radius:8px; background:var(--input);
+                          color:var(--text); border:1px solid var(--border); font-size:13px; box-sizing:border-box;">
+          </div>
+          <div id="login-error" style="font-size:12px; color:var(--error); display:none;"></div>
+        </div>
+      `;
+
+      window.createModal({
+        title: 'Kirjaudu Skyplaniin',
+        icon: '🔐',
+        type: 'info',
+        confirmText: 'Kirjaudu',
+        cancelText: 'Peruuta',
+        centered: true,
+        compact: true,
+        maxWidth: '460px',
+        bodyHTML,
+        onConfirm: async () => {
+          const u = (document.getElementById('login-username')?.value || '').trim();
+          const p = document.getElementById('login-password')?.value || '';
+          const err = document.getElementById('login-error');
+
+          if (!u || !p) {
+            if (err) { err.style.display = 'block'; err.textContent = 'Täytä molemmat kentät'; }
+            return false;
+          }
+
+          const btn = document.querySelector('div[style*="position: fixed"] #modal-confirm');
+          if (btn) { btn.disabled = true; btn.textContent = 'Kirjaudutaan…'; }
+
+          try {
+            const token = await loginWithCredentials(u, p);
+            if (typeof showToast === 'function') showToast('Kirjautuminen onnistui', 'success');
+            finish(token);
+          } catch (e) {
+            if (err) { err.style.display = 'block'; err.textContent = e.message; }
+            if (btn) { btn.disabled = false; btn.textContent = 'Kirjaudu'; }
+            return false;
+          }
+        },
+        onCancel: () => finish(null)
+      });
+
+      setTimeout(() => {
+        document.getElementById('login-username')?.focus();
+      }, 100);
+    });
+  })();
+
+  return _loginModalPromise;
+}
+
+window.loginWithCredentials = loginWithCredentials;
+window.promptForLogin = promptForLogin;
+
 /* ---------------- Pääfunktio: getValidToken ---------------- */
 window.getValidToken = async function() {
   if (!navigator.onLine) {
@@ -182,7 +324,7 @@ window.getValidToken = async function() {
       // Refresh token on vanhentunut
       if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) return null;
       _lastModalShownAt = Date.now();
-      return await promptForTokenModal();
+      return await promptForLogin();
     }
 
     // KÄYTETÄÄN JAETTUA PROMISEA
@@ -198,7 +340,7 @@ window.getValidToken = async function() {
   // 3. Ei tokeneita -> Pyydetään käyttäjältä
   if (Date.now() - _lastModalShownAt < MODAL_COOLDOWN_MS) return null;
   _lastModalShownAt = Date.now();
-  return await promptForTokenModal();
+  return await promptForLogin();
 };
 
 window.getValidSkyplanToken = window.getValidToken;
