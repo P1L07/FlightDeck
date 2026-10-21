@@ -78,7 +78,11 @@ function _wpNowUtc() {
 /* ---------------- Popup ---------------- */
 async function showWaypointPopup(waypoint, flightId, options = {}) {
   if (!waypoint || !flightId) return;
-  if (_wpPopupOpen) return; // älä avaa toista päällekkäin
+  // FIX #9: Sulje edellinen popup ennen uuden avaamista
+  if (_wpPopupOpen) {
+    const existing = document.querySelector('div[style*="position: fixed"]');
+    if (existing) existing.remove();
+  }
 
   const { autoOpened = false, prefillAto = null, distanceNM = null } = options;
   const name = String(waypoint.name || '').toUpperCase();
@@ -135,7 +139,7 @@ async function showWaypointPopup(waypoint, flightId, options = {}) {
         ${!autoOpened && distText ? ` · ${distText}` : ''}
       </div>
 
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      <div style="display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:10px;">
         <div>
           <label style="display:block; font-size:11px; font-weight:600; color:var(--dim); margin-bottom:4px;">ETO (UTC)</label>
           <input type="time" id="wp-eto" value="${esc(etoValue)}"
@@ -253,6 +257,10 @@ function startWaypointGPSWatch(flightId, waypoints) {
 
 function _checkWaypointProximity(pos) {
   if (!pos || !_wpActiveFlightId || !_wpActiveWaypoints) return;
+  
+  // FIX #7: FOB tarkistetaan vain 30 min välein
+  const lastCheck = Cache.get(`waypoint:lastcheck:${_wpActiveFlightId}`, { mode: 'persist' })?.value || 0;
+  if (Date.now() - lastCheck < 30 * 60 * 1000) return; 
   if (_wpPopupOpen) return;
 
   const now = Date.now();
@@ -286,6 +294,8 @@ function _checkWaypointProximity(pos) {
     prefillAto: _wpNowUtc(),
     distanceNM: nearestDist
   }).catch(e => console.warn('[Waypoint GPS] popup failed:', e));
+
+  Cache.set(`waypoint:lastcheck:${flightId}`, Date.now(), { ttlMs: 24 * 60 * 60 * 1000, mode: 'persist' });
 }
 
 function stopWaypointGPSWatch() {
@@ -393,7 +403,7 @@ window.getWaypointPrefill = getWaypointPrefill;
  * ============================================================== */
 let _takeoffPromptShown = new Set();
 
-async function showTakeoffModal(flight, fid) {
+async function showTakeoffModal(flight, fid, prefillAto = null) {
   const { current, next } = (typeof _findCurrentAndNextFlights === 'function')
     ? _findCurrentAndNextFlights() : {};
   const f = flight || current || next;
@@ -410,7 +420,8 @@ async function showTakeoffModal(flight, fid) {
   const flightNum = (carrier && fltNo.startsWith(carrier)) ? fltNo : `${carrier}${fltNo}`;
 
   const now = new Date();
-  const defaultAto = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+  // Käytetään prefillAto jos annettu, muuten nykyistä UTC-aikaa
+  const defaultAto = prefillAto || `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
 
   let waited = 0;
   while (typeof window.createModal !== 'function' && waited < 5000) {
@@ -427,6 +438,11 @@ async function showTakeoffModal(flight, fid) {
         <strong style="color:var(--accent);">${_esc(flightNum)}</strong>
         ${_esc(f.DepartureStationIcaoCode || '')} → ${_esc(f.ArrivalStationIcaoCode || '')}
       </div>
+      ${prefillAto ? `
+        <div style="font-size:11.5px; color:var(--success); padding:8px 10px; background:rgba(50,215,75,0.08); border-radius:6px; border:1px solid rgba(50,215,75,0.3);">
+          📡 Journey-logista haettu ATO: <b>${prefillAto}</b>
+        </div>
+      ` : ''}
       <div style="font-size:12px; color:var(--warning); padding:10px; background:rgba(255,179,0,0.08); border-radius:8px; border:1px solid rgba(255,179,0,0.25);">
         Syötä toteutunut lähtöaika ja takeoff-polttoaine. Nämä tallennetaan lennon kontekstiin ja käytetään waypoint-EFOB- ja ETO-laskennoissa.
       </div>
@@ -454,13 +470,14 @@ async function showTakeoffModal(flight, fid) {
       const ato = document.getElementById('tk-ato')?.value || '';
       const fuel = parseInt(document.getElementById('tk-fuel')?.value, 10) || null;
 
+      // Haetaan olemassa oleva context tai luodaan uusi
       const ctx = (typeof Cache !== 'undefined')
         ? (Cache.get(`flight:context:${flightId}`, { mode: 'persist' })?.value || {})
         : {};
 
       if (ato) {
         const dateStr = String(f.StdLt || f.Std || '').split('T')[0] || new Date().toISOString().split('T')[0];
-        ctx.takeoffIso = `${dateStr}T${ato}:00.000Z`; // Pakotetaan uusi ATO!
+        ctx.takeoffIso = `${dateStr}T${ato}:00.000Z`; // Pakotetaan uusi ATO
       }
       if (fuel) ctx.takeoffFuelKg = fuel;
 
@@ -475,6 +492,11 @@ async function showTakeoffModal(flight, fid) {
       if (typeof showToast === 'function') {
         showToast(`Takeoff tallennettu: ${ato}${fuel ? ' · ' + fuel + ' kg' : ''}`, 'success');
       }
+
+      // Päivitetään vain lähin kenttä, ei koko dashboardia
+      if (typeof window._updateNearestAirport === 'function') {
+        try { window._updateNearestAirport(); } catch (e) {}
+      }
     }
   });
 }
@@ -482,10 +504,11 @@ async function showTakeoffModal(flight, fid) {
 window.showTakeoffModal = showTakeoffModal;
 
 /* GPS-nopeuden tarkkailu */
-function _checkTakeoffSpeed(pos) {
-  if (!pos || !pos.speed) return;
+async function _checkTakeoffSpeed(pos) {
+  if (!pos || pos.speed == null) return;
+  
   const speedKts = pos.speed * 1.94384;
-  if (speedKts < 40) return;
+  if (speedKts < 35) return;
 
   const { current, next } = (typeof _findCurrentAndNextFlights === 'function')
     ? _findCurrentAndNextFlights() : {};
@@ -495,20 +518,44 @@ function _checkTakeoffSpeed(pos) {
   const fid = String(flight.ID || flight.id || flight.FlightID || '');
   if (!fid || _takeoffPromptShown.has(fid)) return;
 
+  // Tarkistetaan, ollaanko lennon aikaikkunassa
   const stdMs = new Date(flight.StdLt || flight.Std || 0).getTime();
   const staMs = new Date(flight.StaLt || flight.Sta || 0).getTime();
   const nowMs = Date.now();
   if (nowMs < stdMs - 15 * 60 * 1000 || nowMs > staMs + 15 * 60 * 1000) return;
 
-  // Tarkista onko ATO jo kirjattu
-  const ctx = (typeof Cache !== 'undefined')
-    ? Cache.get(`flight:context:${fid}`, { mode: 'persist' })?.value : null;
-  if (ctx?.takeoffIso) return;
-
+  // Estetään tuplalaukaisu
   _takeoffPromptShown.add(fid);
-  showTakeoffModal(flight, fid);
-}
 
+  let autoAto = null;
+
+  // Yritetään hakea takeoff aika journey-logista
+  if (navigator.onLine && typeof fetchJourneyLog === 'function') {
+    try {
+      const log = await fetchJourneyLog(fid);
+      if (log?.takeoff || log?.atd) {
+        const timeIso = log.takeoff || log.atd;
+        if (typeof hhmmFromIso === 'function') {
+          autoAto = hhmmFromIso(timeIso);
+        }
+        
+        // Päivitetään context suoraan, jotta kartta saa oikean ajan
+        const ctx = Cache.get(`flight:context:${fid}`, { mode: 'persist' })?.value || {};
+        ctx.takeoffIso = timeIso;
+        Cache.set(`flight:context:${fid}`, ctx, { ttlMs: 24 * 60 * 60 * 1000, mode: 'persist' });
+        
+        if (typeof showToast === 'function') {
+          showToast(`Takeoff-aika haettu automaattisesti: ${autoAto} UTC`, 'success');
+        }
+      }
+    } catch (e) {
+      console.warn('[Auto ATO] Journey log fetch failed:', e);
+    }
+  }
+
+  // Avataan modaali (joko autoAto esitäytettynä tai ilman)
+  showTakeoffModal(flight, fid, autoAto);
+}
 window._checkTakeoffSpeed = _checkTakeoffSpeed;
 
 /* ---------------- Tulevaa print-logiikkaa varten ---------------- */

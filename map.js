@@ -542,8 +542,11 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   if (!container.isConnected) return;
   if (container._renderGen !== __myGen) return;
 
-  const width = container.clientWidth || 400;
-  const height = container.clientHeight || 240;
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  if (!width || !height) {
+    return requestAnimationFrame(() => renderFlightMap(container, depIcao, arrIcao, options));
+  }
   const minDim = Math.min(width, height);
   const margin = options.margin ?? 14;
 
@@ -914,27 +917,12 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
       .attr('class', 'fm-own-position')
       .style('pointer-events', 'none');
 
-    ownPositionNode.append('circle')
-      .attr('r', 8)
-      .attr('fill', 'rgba(0,122,255,0.15)')
-      .attr('stroke', '#007aff')
-      .attr('stroke-width', 1.5);
-
-    ownPositionNode.append('circle')
-      .attr('r', 4)
-      .attr('fill', '#007aff');
-
     ownPositionNode.append('text')
-      .attr('x', 14)
-      .attr('y', 4)
-      .attr('fill', '#007aff')
-      .attr('font-size', 10)
-      .attr('font-family', 'monospace')
-      .attr('font-weight', 'bold')
-      .attr('paint-order', 'stroke')
-      .attr('stroke', '#000')
-      .attr('stroke-width', 2.5)
-      .text('YOU');
+      .attr('font-size', mobile ? 18 : 22)
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'central')
+      .style('filter', 'drop-shadow(0 0 4px rgba(0,0,0,0.8))')
+      .text('✈️');
   }
 
   function updateOwnPosition() {
@@ -1160,10 +1148,15 @@ async function renderFlightMap(container, depIcao, arrIcao, options = {}) {
   }
 
   function resetView() {
+    // FIX #8: Jos GPS on saatavilla, keskitä käyttäjään
+    const pos = (typeof LocationService !== 'undefined') ? LocationService.getLast() : null;
+    if (pos && isFinite(pos.lat) && isFinite(pos.lon)) {
+      currentRotate = [-pos.lon, -pos.lat];
+    } else {
+      currentRotate = [-midLon, -midLat];
+    }
     currentScale = initialScale;
-    currentRotate = [-midLon, -midLat];
     isUserInteracted = false;
-
     scheduleUpdate();
     updateResetBtn();
   }

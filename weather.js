@@ -756,6 +756,7 @@ async function renderHomeDashboard() {
       }
 
       /* FIX #1: oikea fuel-parsinta OFP:stä */
+            /* FIX #1: Älä ylikirjoita manuaalisesti syötettyjä tietoja */
       try {
         const journeyLog = (typeof getCachedJourneyLog === 'function') ? getCachedJourneyLog(fid) : null;
         const takeoffIso = journeyLog?.takeoff || journeyLog?.atd || null;
@@ -766,15 +767,22 @@ async function renderHomeDashboard() {
           if (fuel?.takeoffFuel) takeoffFuelKg = fuel.takeoffFuel;
         }
 
-        if (takeoffIso || takeoffFuelKg != null) {
-          Cache.set(`flight:context:${fid}`, {
-            takeoffIso, takeoffFuelKg
-          }, { ttlMs: 24 * 60 * 60 * 1000, mode: 'persist' });
-          console.log('[HomeMap] Context saved:', { takeoffIso, takeoffFuelKg });
+        const existingCtx = (typeof Cache !== 'undefined')
+          ? (Cache.get(`flight:context:${fid}`, { mode: 'persist' })?.value || {})
+          : {};
+
+        // Säilytetään vanha, jos uusi on null
+        const mergedCtx = {
+          takeoffIso: takeoffIso || existingCtx.takeoffIso || null,
+          takeoffFuelKg: takeoffFuelKg || existingCtx.takeoffFuelKg || null
+        };
+
+        if (mergedCtx.takeoffIso || mergedCtx.takeoffFuelKg != null) {
+          Cache.set(`flight:context:${fid}`, mergedCtx, {
+            ttlMs: 24 * 60 * 60 * 1000, mode: 'persist'
+          });
         }
-      } catch (e) {
-        console.warn('[HomeMap] Context save failed:', e);
-      }
+      } catch (e) {}
 
       // 5. WX-lataus + re-render
       if (notamAirports.length && typeof _preloadWxForAirports === 'function') {
@@ -799,6 +807,14 @@ async function renderHomeDashboard() {
       }
     }
   })();
+
+  // FIX #5: Pakotetaan lähimmän kentän päivitys
+  if (window._nearestTimer) clearInterval(window._nearestTimer);
+  window._nearestTimer = setInterval(() => {
+    if (document.querySelector('#tab-home.active') && typeof window._updateNearestAirport === 'function') {
+      try { window._updateNearestAirport(); } catch (e) {}
+    }
+  }, 10000);
 
   // Klikkauskäsittelijät
   overlayEl.querySelectorAll('.hm-icao, [data-reg]').forEach(btn => {

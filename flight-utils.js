@@ -360,7 +360,7 @@ function updateTopbarCountdown() {
     const fid = String(next.ID || next.id || next.FlightID || '');
     const log = _getCachedJourneyLog(fid);
     if (log?.atd && !log?.ata) {
-      timeEl.textContent = 'Lennolla';
+      timeEl.textContent = '';
       el.querySelector('.tc-icon').textContent = '✈';
     } else {
       timeEl.textContent = 'Nyt';
