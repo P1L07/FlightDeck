@@ -1,24 +1,14 @@
 /* ==============================================================
  * INDEXEDDB · Lokikirjan tallennus
- * ==============================================================
- * Hybridi:
- *   - Muisti (memory) = nopea synkroninen API
- *   - IndexedDB = pysyvä tallennus
- *   - localStorage = pieni peili (migraatio + fallback)
- *
- * Käyttö:
- *   await dbInit()          → lataa IndexedDB → muistiin
- *   dbSave(entry)           → tallenna muistiin + IDB
- *   dbReadAll()             → synkroninen luku muistista
- *   dbReplaceAll(list)      → korvaa koko lista
  * ============================================================== */
+'use strict';
 
 const DB_NAME = 'flightdeck';
 const DB_VERSION = 1;
 const DB_STORE = 'logbook';
 
 let _db = null;
-let _logbookMemory = [];       // ← synkroninen peili
+let _logbookMemory = [];
 let _dbReady = false;
 
 /* ---------------- Init ---------------- */
@@ -47,7 +37,6 @@ async function dbInit() {
       };
     });
 
-    // Lue kaikki lähteet
     const fromIDB = await _dbReadAllFromIDB();
 
     let fromLS = [];
@@ -55,9 +44,7 @@ async function dbInit() {
       fromLS = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
     } catch (e) {}
 
-    // Etsi suurin backup localStorage:sta
     let fromBackup = [];
-    let backupKey = null;
     const backupKeys = [
       'easa_logbook_backup_before_nightrecalc',
       'easa_logbook_backup_before_sync',
@@ -71,47 +58,31 @@ async function dbInit() {
         const arr = data.entries || data;
         if (Array.isArray(arr) && arr.length > fromBackup.length) {
           fromBackup = arr;
-          backupKey = key;
         }
       } catch (e) {}
     }
 
+    // KORJAUS: IDB voittaa AINA, jos siinä on yhtään dataa.
+    // Näin varmistetaan, ettei vanha backup ylikirjoita allekirjoitettuja lentoja.
+    let winner;
+    if (fromIDB.length > 0) {
+      winner = { src: 'idb', list: fromIDB };
+    } else {
+      const candidates = [
+        { src: 'ls',     list: fromLS },
+        { src: 'backup', list: fromBackup }
+      ];
+      candidates.sort((a, b) => b.list.length - a.list.length);
+      winner = candidates[0];
+    }
 
-    // ⚠️ VALITSE SUURIN — älä koskaan ylikirjoita suurempaa pienemmällä
-    const candidates = [
-      { src: 'idb',    list: fromIDB },
-      { src: 'ls',     list: fromLS },
-      { src: 'backup', list: fromBackup }
-    ];
-    candidates.sort((a, b) => b.list.length - a.list.length);
-
-    const winner = candidates[0];
-
-    // Jos voittaja ei ole IDB → migroi IDB:hen
     if (winner.src !== 'idb' && winner.list.length > 0) {
       console.log(`[DB] Migroidaan ${winner.src} → IndexedDB (${winner.list.length} kirjausta)`);
-
-      // Merkintä migraatiosta
-      try {
-        localStorage.setItem('easa_logbook_migration_meta',
-          JSON.stringify({
-            at: new Date().toISOString(),
-            from: winner.src,
-            count: winner.list.length,
-            prevIDBCount: fromIDB.length
-          })
-        );
-      } catch (e) {}
-
       await _dbReplaceAllToIDB(winner.list);
-
-      // Päivitä myös localStorage-peili jos backup oli suurempi
       if (winner.src === 'backup' && fromLS.length < winner.list.length) {
         try {
           localStorage.setItem('easa_logbook_v1', JSON.stringify(winner.list));
-        } catch (e) {
-          console.warn('[DB] localStorage-peili täynnä — käytetään vain IDB');
-        }
+        } catch (e) {}
       }
     }
 
@@ -120,7 +91,6 @@ async function dbInit() {
     return _logbookMemory;
   } catch (e) {
     console.error('[DB] Init epäonnistui:', e);
-    // Viimeinen fallback: yritä lukea jokin lähde
     try {
       const ls = JSON.parse(localStorage.getItem('easa_logbook_v1') || '[]');
       if (ls.length) { _logbookMemory = ls; _dbReady = true; return ls; }
@@ -144,40 +114,43 @@ function _dbReadAllFromIDB() {
 }
 
 function _dbPutOne(entry) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!_db || !entry?.id) return resolve();
     const tx = _db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
     const req = store.put(entry);
     req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
+    req.onerror = (e) => {
+      console.error('[DB] IDB write failed:', e.target?.error);
+      reject(e.target?.error || new Error('IDB write failed'));
+    };
   });
 }
 
 function _dbDeleteOne(id) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!_db || !id) return resolve();
     const tx = _db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
     const req = store.delete(id);
     req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
+    req.onerror = (e) => reject(e.target?.error);
   });
 }
 
 function _dbClearAll() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!_db) return resolve();
     const tx = _db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
     const req = store.clear();
     req.onsuccess = () => resolve();
-    req.onerror = () => resolve();
+    req.onerror = (e) => reject(e.target?.error);
   });
 }
 
 function _dbReplaceAllToIDB(list) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!_db) return resolve();
     const tx = _db.transaction(DB_STORE, 'readwrite');
     const store = tx.objectStore(DB_STORE);
@@ -186,13 +159,13 @@ function _dbReplaceAllToIDB(list) {
       if (e?.id) store.put(e);
     }
     tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
+    tx.onerror = (e) => reject(e.target?.error);
   });
 }
 
-/* ---------------- Julkinen API (synkroninen) ---------------- */
+/* ---------------- Julkinen API ---------------- */
 function dbReadAll() {
-  return _logbookMemory.slice();  // ← matala kopio, turvallinen
+  return _logbookMemory.slice();
 }
 
 function dbGetOne(id) {
@@ -200,35 +173,36 @@ function dbGetOne(id) {
 }
 
 function dbPutOne(entry) {
-  if (!entry?.id) return;
+  if (!entry?.id) return Promise.resolve();
   const idx = _logbookMemory.findIndex(e => e.id === entry.id);
   if (idx >= 0) _logbookMemory[idx] = entry;
   else _logbookMemory.push(entry);
 
-  // Taustalla: IDB + localStorage
-  _dbPutOne(entry).catch(() => {});
+  // Palautetaan IDB:n promise, jotta kutsuja voi odottaa tallennusta
+  const p = _dbPutOne(entry);
   _mirrorToLocalStorage();
+  return p;
 }
 
 function dbDeleteOne(id) {
-  if (!id) return;
+  if (!id) return Promise.resolve();
   _logbookMemory = _logbookMemory.filter(e => e.id !== id);
-  _dbDeleteOne(id).catch(() => {});
+  const p = _dbDeleteOne(id);
   _mirrorToLocalStorage();
+  return p;
 }
 
 function dbReplaceAll(list) {
   _logbookMemory = Array.isArray(list) ? list.slice() : [];
-  _dbReplaceAllToIDB(_logbookMemory).catch(() => {});
+  const p = _dbReplaceAllToIDB(_logbookMemory);
   _mirrorToLocalStorage();
+  return p;
 }
 
-/* Estä ylikirjoitus: jos uusi data on pienempi kuin 50% vanhasta → vahvista */
-function dbReplaceAllSafe(newList, options = {}) {
+async function dbReplaceAllSafe(newList, options = {}) {
   const oldCount = _logbookMemory.length;
   const newCount = Array.isArray(newList) ? newList.length : 0;
 
-  // Varoita aina jos menetetään yli puolet (paitsi jos 0 → 0)
   const isDangerous = oldCount > 0 && newCount < oldCount * 0.5;
 
   if (!options.force && isDangerous) {
@@ -238,43 +212,42 @@ function dbReplaceAllSafe(newList, options = {}) {
     }
   }
 
-  dbReplaceAll(newList);
+  await dbReplaceAll(newList);
   return true;
 }
 window.dbReplaceAllSafe = dbReplaceAllSafe;
 
-function dbClearAll(options = {}) {
+async function dbClearAll(options = {}) {
   if (!options.force && _logbookMemory.length > 0) {
     if (!confirm(`Poistetaanko kaikki ${_logbookMemory.length} kirjausta pysyvästi?`)) {
       return false;
     }
   }
   _logbookMemory = [];
-  _dbClearAll().catch(() => {});
+  await _dbClearAll().catch(() => {});
   _mirrorToLocalStorage();
   return true;
 }
 
-/* ---------------- localStorage-peili (migraatiota varten) ---------------- */
+/* ---------------- localStorage-peili ---------------- */
 let _lsMirrorTimer = null;
 function _mirrorToLocalStorage() {
   clearTimeout(_lsMirrorTimer);
   _lsMirrorTimer = setTimeout(() => {
     try {
-      // Nopea esitarkistus — 1 kirjaus ≈ 1.5 kB keskimäärin
       if (_logbookMemory.length > 500) {
-        localStorage.setItem('easa_logbook_v1', '[]');
+        // KORJAUS: Älä tyhjennä, jos liian iso. Jätetään vanha peili.
+        console.warn('[DB] Lokikirja liian iso localStorageen — säilytetään vanha peili');
         return;
       }
       const json = JSON.stringify(_logbookMemory);
       if (json.length < 3_500_000) {
         localStorage.setItem('easa_logbook_v1', json);
       } else {
-        localStorage.setItem('easa_logbook_v1', '[]');
-        console.warn('[DB] Lokikirja liian iso localStorageen — vain IndexedDB käytössä');
+        console.warn('[DB] Lokikirja liian iso localStorageen — säilytetään vanha peili');
       }
     } catch (e) {
-      try { localStorage.setItem('easa_logbook_v1', '[]'); } catch (e2) {}
+      console.warn('[DB] localStorage-peilin päivitys epäonnistui', e);
     }
   }, 500);
 }
@@ -288,7 +261,6 @@ window.dbDeleteOne = dbDeleteOne;
 window.dbReplaceAll = dbReplaceAll;
 window.dbClearAll = dbClearAll;
 
-/* ---------------- Debug ---------------- */
 window.dbDebug = async function () {
   const all = dbReadAll();
   console.log('=== IndexedDB Debug ===');
@@ -303,16 +275,3 @@ window.dbDebug = async function () {
                 Math.round(est.quota / 1024 / 1024), 'MB');
   }
 };
-
-window.addEventListener('beforeunload', () => {
-  if (_lsMirrorTimer) {
-    clearTimeout(_lsMirrorTimer);
-    _lsMirrorTimer = null;
-    try {
-      const json = JSON.stringify(_logbookMemory);
-      if (json.length < 3_500_000) {
-        localStorage.setItem('easa_logbook_v1', json);
-      }
-    } catch (e) {}
-  }
-});

@@ -73,10 +73,10 @@ function _lbReadAll() {
 
 function _lbWriteAll(list) {
   if (typeof dbReplaceAllSafe === 'function' && window.dbReplaceAllSafe) {
-    dbReplaceAllSafe(list);
-    return;
+    return dbReplaceAllSafe(list); // Palauttaa promisen
   }
   try { localStorage.setItem(LOGBOOK_STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
+  return Promise.resolve();
 }
 
 function getLogbookEntries() { return _lbReadAll(); }
@@ -91,8 +91,9 @@ window.getLogbookEntryByFlightId = getLogbookEntryByFlightId;
 
 function saveLogbookEntry(entry) {
   if (!entry || !entry.id) throw new Error("saveLogbookEntry: entry.id required");
+  let p = Promise.resolve();
   if (typeof dbPutOne === 'function' && window.dbPutOne) {
-    dbPutOne(entry);
+    p = dbPutOne(entry); // Palauttaa promisen
   } else {
     const list = _lbReadAll();
     const idx = list.findIndex(e => e.id === entry.id);
@@ -103,7 +104,7 @@ function saveLogbookEntry(entry) {
       && document.getElementById('logbook-container')) {
     renderLogbookTable();
   }
-  return entry;
+  return p;
 }
 window.saveLogbookEntry = saveLogbookEntry;
 
@@ -1360,7 +1361,8 @@ function promptLogbookSignature(entryId) {
           catch (err) { console.error('[Seal] failed:', err); }
         }
 
-        saveLogbookEntry(entry);
+        // ODOTETAAN ETTÄ TALLENNUS VALMISTUU
+        await saveLogbookEntry(entry);
 
         if (typeof showToast === 'function') {
           showToast(spicChecked ? 'Kirjaus allekirjoitettu (SPIC).' : 'Kirjaus allekirjoitettu.', 'success');
@@ -1620,14 +1622,18 @@ async function _promptSignAllModal(data) {
 
           const idx = list.findIndex(x => x.id === e.id);
           if (idx >= 0) list[idx] = e;
-          _lbWriteAll(list);
+
+          // KORJAUS: Odotetaan että IDB on tallentanut ennen seuraavaa
+          await _lbWriteAll(list);
 
           if (typeof sealLogbookEntry === 'function') {
             try {
               await sealLogbookEntry(e);
               const idx2 = list.findIndex(x => x.id === e.id);
               if (idx2 >= 0) list[idx2] = e;
-              _lbWriteAll(list);
+              
+              // KORJAUS: Odotetaan myös sinetöinnin tallennus
+              await _lbWriteAll(list);
               await new Promise(r => setTimeout(r, 5));
             } catch (err) {
               console.warn('[SignAll] seal failed:', err);
