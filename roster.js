@@ -2,31 +2,30 @@
  * ROSTER SYNC · Yhdistäminen, muutosvertailu ja autoload
  * ============================================================== */
 
-/* ---------------- Merge: yhdistä lennot ID:n perusteella ----------------
- * - Jos lento on molemmissa: uusi korvaa vanhan (dispatch päivitti)
- * - Jos lento vain uudessa: lisätään
- * - Jos lento vain vanhassa: säilytetään (aikaisempi aikaväli)
- * - Poistaa lennot jotka ovat yli 90 päivää vanhoja (cache trim)
- * --------------------------------------------------------------------- */
 function mergeRosterFlights(existing, incoming) {
   const map = new Map();
   const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  // KORJAUS: Merkitään kaikki incoming-lennot nähdyiksi juuri nyt
+  (Array.isArray(incoming) ? incoming : []).forEach(f => {
+    if (f && typeof f === 'object') {
+      f._lastSeenInRoster = now;
+    }
+  });
 
   const addFlight = (f, isNew) => {
     if (!f || typeof f !== 'object') return;
     const id = String(f.ID || f.id || f.FlightID || f.FlightId || '');
     if (!id) return;
 
-    // Trimmaa vanhat
     const std = new Date(f.StdLt || f.Std || 0).getTime();
     if (std && std < cutoff && !isNew) return;
 
     map.set(id, f);
   };
 
-  // Vanhat ensin (säilyvät jos ei uutta versiota)
   (Array.isArray(existing) ? existing : []).forEach(f => addFlight(f, false));
-  // Uudet päälle (korvaavat)
   (Array.isArray(incoming) ? incoming : []).forEach(f => addFlight(f, true));
 
   const merged = Array.from(map.values());
@@ -405,13 +404,35 @@ async function forceRosterSync(options = {}) {
         console.warn('[Roster] API-vastauksen tallennus epäonnistui:', e);
       }
 
-      // 5. Päivitä cache (merge)
-      try {
-        const existing = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-        const merged = mergeRosterFlights(existing, allFlights);
-        localStorage.setItem('assigned_flights_cache', JSON.stringify(merged));
-        localStorage.setItem('assigned_flights_cache_time',
-          new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    // 5. Päivitä cache (merge) + siivoa vanhentuneet
+    try {
+      const existing = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
+      const merged = mergeRosterFlights(existing, allFlights);
+
+      // KORJAUS: Poistetaan lennot jotka ovat yli 2 vrk vanhoja (STA + 2 vrk)
+      // Tämä poistaa sekä perutut että jo lennetyt lennot välimuistista.
+      const nowMs = Date.now();
+      const graceMs = 2 * 24 * 60 * 60 * 1000; // 2 vrk
+      const removed = [];
+
+      const cleanedMerged = merged.filter(f => {
+        const sta = new Date(f.StaLt || f.Sta || 0).getTime();
+        if (!sta) return true;
+        if (nowMs - sta > graceMs) {
+          removed.push(f);
+          return false;
+        }
+        return true;
+      });
+
+      if (removed.length > 0) {
+        console.log(`[Roster] Poistettu ${removed.length} vanhentunutta lentoa välimuistista:`,
+          removed.map(f => `${f.FlightNumber || '?'}/${String(f.StdLt || f.Std || '').split('T')[0]}`).join(', '));
+      }
+
+      localStorage.setItem('assigned_flights_cache', JSON.stringify(cleanedMerged));
+      localStorage.setItem('assigned_flights_cache_time',
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
         const dates = allFlights
           .map(f => String(f.StdLt || f.Std || '').split('T')[0])

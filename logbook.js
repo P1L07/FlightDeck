@@ -123,6 +123,65 @@ function deleteLogbookEntry(id) {
 }
 window.deleteLogbookEntry = deleteLogbookEntry;
 
+async function deleteLogbookEntryFromDetail(id) {
+  const entry = getLogbookEntry(id);
+  if (!entry) return;
+
+  const label = entry.skyplan?.flightNumber || entry.date || 'kirjaus';
+  const dateStr = entry.date || '';
+  const route = `${entry.departure?.place || '?'} → ${entry.arrival?.place || '?'}`;
+
+  const confirmed = await createModal({
+    title: 'Poista kirjaus?',
+    icon: '🗑',
+    type: 'error',
+    bodyHTML: `
+      <div style="font-size:13px; line-height:1.6;">
+        <p style="color:var(--text); font-weight:600; margin-bottom:10px;">
+          ${_esc(label)} · ${_esc(dateStr)}
+        </p>
+        <p style="color:var(--dim); margin-bottom:14px;">
+          ${_esc(route)}
+        </p>
+        <p style="color:var(--warning); font-size:12px;">
+          ⚠ Tämä poistaa kirjauksen pysyvästi eikä sitä voi perua.
+        </p>
+      </div>
+    `,
+    confirmText: 'Poista',
+    cancelText: 'Peruuta',
+    maxWidth: '440px',
+    compact: true
+  });
+
+  if (!confirmed) return;
+
+  try {
+    if (typeof dbDeleteOne === 'function' && window.dbDeleteOne) {
+      await dbDeleteOne(id);
+    } else {
+      const list = _lbReadAll().filter(e => e.id !== id);
+      await _lbWriteAll(list);
+    }
+
+    // Suljetaan detail-modaali
+    const modal = document.querySelector('div[style*="position: fixed"]');
+    if (modal) modal.remove();
+
+    if (typeof renderLogbookTable === 'function') renderLogbookTable();
+    if (typeof renderChainStatusBadge === 'function') renderChainStatusBadge();
+    if (typeof showToast === 'function') {
+      showToast(`Kirjaus ${label} poistettu.`, 'success', 3000);
+    }
+  } catch (err) {
+    console.error('[Delete] failed:', err);
+    if (typeof showToast === 'function') {
+      showToast('Poisto epäonnistui: ' + err.message, 'error', 5000);
+    }
+  }
+}
+window.deleteLogbookEntryFromDetail = deleteLogbookEntryFromDetail;
+
 /* ==============================================================
  * CERTIFICATION-ALLEKIRJOITUS
  * ============================================================== */
@@ -656,6 +715,13 @@ async function importLogbookFromJourneyLog(flightId, flightNum, dateStr, flightM
   try {
     const log = await fetchJourneyLog(flightId);
 
+    // KORJAUS: Älä tuo peruttua / lentämätöntä lentoa
+    if (!log.atd || !log.ata) {
+      throw new Error(
+        `Journey log ei sisällä ATD/ATA-aikoja — lentoa ${flightNum || flightId} ei ole lennetty tai se on peruttu.`
+      );
+    }
+
     let depIcao = flightMeta.depIcao || '';
     let arrIcao = flightMeta.arrIcao || '';
     let aircraftReg = flightMeta.aircraftReg || '';
@@ -692,7 +758,8 @@ async function importLogbookFromJourneyLog(flightId, flightNum, dateStr, flightM
       date: dateStr
     }, ownStaffId);
 
-    saveLogbookEntry(entry);
+    // KORJAUS: Odota että IDB tallentaa ennen kuin kerrotaan onnistumisesta
+    await saveLogbookEntry(entry);
 
     if (!silent) {
       hideModalLoader();
@@ -704,16 +771,27 @@ async function importLogbookFromJourneyLog(flightId, flightNum, dateStr, flightM
   } catch (err) {
     if (!silent) {
       hideModalLoader();
-      createModal({
-        title: 'Import Failed',
-        message: err.message || 'Failed to import journey log.',
-        type: 'error',
-        icon: '⚠️',
-        confirmText: 'Close',
-        compact: true
-      });
+
+      // Tarkistetaan onko kyseessä "ei lennetty" -tilanne
+      const msg = String(err?.message || '');
+      const isNotFlown = msg.includes('ATD/ATA') || msg.includes('peruttu');
+
+      if (typeof createModal === 'function') {
+        createModal({
+          title: isNotFlown ? 'Lentoa ei voi tuoda' : 'Import Failed',
+          message: msg || 'Failed to import journey log.',
+          type: isNotFlown ? 'info' : 'error',
+          icon: isNotFlown ? 'ℹ️' : '⚠️',
+          confirmText: 'Close',
+          compact: true
+        });
+      }
     } else {
-      console.warn('[AutoImport] Silent fail for', flightNum, ':', err.message);
+      const msg = String(err?.message || '');
+      const isNotFlown = msg.includes('ATD/ATA') || msg.includes('peruttu');
+      if (!isNotFlown) {
+        console.warn('[AutoImport] Silent fail for', flightNum, ':', msg);
+      }
     }
     return null;
   }
@@ -821,8 +899,13 @@ function renderLogbookTable() {
             </button>
             <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;"
               onclick="showLogbookEntryDetail('${e.id}')">Näytä</button>
-            <button class="btn-ghost" style="height:32px; padding:0 10px; font-size:12px; margin-left:6px; color:var(--error);"
-              onclick="deleteLogbookEntry('${e.id}')">✕</button>
+            <button class="btn-ghost"
+              style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;
+                    color:var(--error); border-color:var(--error); background:rgba(255,69,58,0.06);"
+              onclick="deleteLogbookEntry('${e.id}')"
+              title="Poista kirjaus pysyvästi">
+              🗑 Poista
+            </button>
           </td>
         </tr>`;
       continue;
@@ -862,8 +945,13 @@ function renderLogbookTable() {
           </button>
           <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;"
             onclick="showLogbookEntryDetail('${e.id}')">Näytä</button>
-          <button class="btn-ghost" style="height:32px; padding:0 10px; font-size:12px; margin-left:6px; color:var(--error);"
-            onclick="deleteLogbookEntry('${e.id}')">✕</button>
+          <button class="btn-ghost"
+            style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;
+                  color:var(--error); border-color:var(--error); background:rgba(255,69,58,0.06);"
+            onclick="deleteLogbookEntry('${e.id}')"
+            title="Poista kirjaus pysyvästi">
+            🗑 Poista
+          </button>
         </td>
       </tr>`;
   }
@@ -1031,14 +1119,32 @@ function showLogbookEntryDetail(id) {
                     background:#fff; border-radius:8px; padding:6px;"/>
       ` : ''}
 
-      ${e.skyplan?.flightId ? `
-        <div style="margin-top:14px; text-align:right;">
-          <button class="btn-ghost" style="height:32px; padding:0 14px; font-size:12px;"
+            ${e.skyplan?.flightId ? `
+        <div style="margin-top:14px; display:flex; justify-content:space-between;
+                    gap:10px; flex-wrap:wrap;">
+          <button class="btn-ghost"
+            style="height:34px; padding:0 14px; font-size:12px;
+                   color:var(--error); border-color:var(--error);
+                   background:rgba(255,69,58,0.06);"
+            onclick="deleteLogbookEntryFromDetail('${e.id}')">
+            🗑 Poista kirjaus
+          </button>
+          <button class="btn-ghost" style="height:34px; padding:0 14px; font-size:12px;"
             onclick="reimportLogbookEntry('${e.id}')">
             ⟳ Päivitä journey-logista
           </button>
         </div>
-      ` : ''}
+      ` : `
+        <div style="margin-top:14px; text-align:right;">
+          <button class="btn-ghost"
+            style="height:34px; padding:0 14px; font-size:12px;
+                   color:var(--error); border-color:var(--error);
+                   background:rgba(255,69,58,0.06);"
+            onclick="deleteLogbookEntryFromDetail('${e.id}')">
+            🗑 Poista kirjaus
+          </button>
+        </div>
+      `}
     </div>
   `;
 
