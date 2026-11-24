@@ -13,6 +13,8 @@
  * ============================================================== */
 
 const BRIEFING_FLIGHT_KEY = 'briefing_selected_flight_id';
+const BRIEFING_FLIGHT_AT_KEY = 'briefing_selected_flight_at';
+const BRIEFING_PICK_TTL_MS = 3 * 60 * 60 * 1000; // käsin valinta pysyy 3 h
 
 /* ---------------- Apurit ---------------- */
 function _bfEsc(s) {
@@ -114,20 +116,38 @@ function _bfGetSelectedFlight() {
   if (!roster.length) return null;
   const now = Date.now();
 
-  // 1) Tallennettu valinta
-  let savedId = null;
-  try { savedId = localStorage.getItem(BRIEFING_FLIGHT_KEY); } catch (e) {}
+  const _std = f => new Date(f.StdLt || f.Std || 0).getTime();
+  const _sta = f => new Date(f.StaLt || f.Sta || 0).getTime();
+
+  // Käynnissä oleva lento (std-60min … sta+30min). Jos ikkunat menevät
+  // päällekkäin (lyhyt kääntö), valitaan ensimmäinen joka ei ole vielä laskeutunut.
+  const inWindow = roster.filter(f =>
+    now >= (_std(f) - 60 * 60 * 1000) && now <= (_sta(f) + 30 * 60 * 1000));
+  const current = inWindow.find(f => _sta(f) >= now) || inWindow[inWindow.length - 1] || null;
+
+  // 1) Tallennettu käsin tehty valinta — KORJAUS: ei enää ikuinen.
+  //    Pidetään vain jos valinta on tuore (< 3 h), tai valittu lento on
+  //    vielä edessä eikä mikään muu lento ole juuri nyt käynnissä.
+  let savedId = null, savedAt = 0;
+  try {
+    savedId = localStorage.getItem(BRIEFING_FLIGHT_KEY);
+    savedAt = new Date(localStorage.getItem(BRIEFING_FLIGHT_AT_KEY) || 0).getTime() || 0;
+  } catch (e) {}
   if (savedId) {
     const found = roster.find(f => String(f.ID || f.id || f.FlightID) === String(savedId));
-    if (found) return found;
+    if (found) {
+      const fresh = now - savedAt < BRIEFING_PICK_TTL_MS;
+      const stillAhead = _sta(found) + 30 * 60 * 1000 > now;
+      if (fresh || (stillAhead && (!current || current === found))) return found;
+    }
+    // Vanhentunut valinta → unohdetaan, jotta automaattinen valinta toimii
+    try {
+      localStorage.removeItem(BRIEFING_FLIGHT_KEY);
+      localStorage.removeItem(BRIEFING_FLIGHT_AT_KEY);
+    } catch (e) {}
   }
 
-  // 2) Oletus: käynnissä oleva lento (std-30min … sta+30min)
-  const current = roster.find(f => {
-    const std = new Date(f.StdLt || f.Std || 0).getTime();
-    const sta = new Date(f.StaLt || f.Sta || 0).getTime();
-    return now >= (std - 30 * 60 * 1000) && now <= (sta + 30 * 60 * 1000);
-  });
+  // 2) Oletus: käynnissä oleva lento
   if (current) return current;
 
   // 3) Seuraava tuleva
@@ -141,6 +161,7 @@ function _bfGetSelectedFlight() {
 function _bfSetSelectedFlight(id) {
   try {
     localStorage.setItem(BRIEFING_FLIGHT_KEY, String(id));
+    localStorage.setItem(BRIEFING_FLIGHT_AT_KEY, new Date().toISOString());
     // Synkkaa kotiin — pinned flight
     localStorage.setItem('home_pinned_flight_id', String(id));
     localStorage.setItem('home_pinned_flight_at', new Date().toISOString());

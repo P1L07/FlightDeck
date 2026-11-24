@@ -37,6 +37,7 @@
 
 <!-- 4. Lokikirja & DB -->
 <script defer src="logbook.js"></script>
+<script defer src="logbook-summary.js"></script>
 <script defer src="airport-db.js"></script>
 
 <!-- 5. Muut moduulit -->
@@ -190,9 +191,14 @@
       <h2>Lokikirja <span class="muted">· EASA FCL.050</span></h2>
       <span id="chain-status" class="chain-status" style="display:none;"></span>
       <div class="section-actions">
+        <div id="logbook-view-toggle" class="lbs-toggle">
+          <button type="button" class="vt-btn active" data-view="list" onclick="setLogbookView('list')">Kirjaukset</button>
+          <button type="button" class="vt-btn" data-view="summary" onclick="setLogbookView('summary')">📊 Yhteenveto</button>
+        </div>
         <button class="btn-ghost" onclick="showExportDialog()" title="Lokikirjan toiminnot">⚙ Toiminnot</button>
       </div>
     </div>
+    <div id="logbook-summary" class="lbs-wrap" style="display:none;"></div>
     <div id="logbook-container" class="table-wrap">
       <div class="empty">Ei kirjauksia. Tuo lentoja <strong>Lennot</strong>-välilehdeltä.</div>
     </div>

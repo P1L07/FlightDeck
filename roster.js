@@ -2,8 +2,75 @@
  * ROSTER SYNC · Yhdistäminen, muutosvertailu ja autoload
  * ============================================================== */
 
-function mergeRosterFlights(existing, incoming) {
+/* --------------------------------------------------------------
+ * Poistettujen lentojen muisti
+ * --------------------------------------------------------------
+ * Kun lento katoaa rosterista (dispatch poisti sen), sen ID
+ * tallennetaan tähän. Auto-import ei koskaan tuo näitä lentoja,
+ * vaikka journey logissa olisi ATD/ATA (joku muu lensi sen).
+ * Jos lento palaa rosteriin, ID poistetaan listalta.
+ * -------------------------------------------------------------- */
+const ROSTER_REMOVED_KEY = 'roster_removed_flight_ids_v1';
+
+function getRemovedRosterFlightIds() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(ROSTER_REMOVED_KEY) || '{}');
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch (e) { return {}; }
+}
+window.getRemovedRosterFlightIds = getRemovedRosterFlightIds;
+
+function isFlightRemovedFromRoster(flightId) {
+  if (!flightId) return false;
+  return Object.prototype.hasOwnProperty.call(getRemovedRosterFlightIds(), String(flightId));
+}
+window.isFlightRemovedFromRoster = isFlightRemovedFromRoster;
+
+function _updateRemovedRosterFlightIds(removedIds, presentIds) {
+  try {
+    const obj = getRemovedRosterFlightIds();
+    const nowIso = new Date().toISOString();
+    (removedIds || []).forEach(id => { if (id) obj[String(id)] = nowIso; });
+    (presentIds || []).forEach(id => { delete obj[String(id)]; });
+    // Siivoa yli 180 vrk vanhat merkinnät
+    const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
+    for (const k of Object.keys(obj)) {
+      if (new Date(obj[k]).getTime() < cutoff) delete obj[k];
+    }
+    localStorage.setItem(ROSTER_REMOVED_KEY, JSON.stringify(obj));
+  } catch (e) {}
+}
+
+function _rosterFlightId(f) {
+  return String((f && (f.ID || f.id || f.FlightID || f.FlightId)) || '');
+}
+
+function _rosterFlightDate(f) {
+  return String((f && (f.StdLt || f.Std)) || '').split('T')[0];
+}
+
+/**
+ * mergeRosterFlights(existing, incoming, window?)
+ *   window = { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
+ * Jos window annetaan, API:n vastaus on täydellinen tälle aikavälille:
+ * välimuistin lennot, joiden lähtöpäivä osuu väliin mutta jotka puuttuvat
+ * API-vastauksesta, on poistettu rosterista → ne pudotetaan pois.
+ */
+function mergeRosterFlights(existing, incoming, window_) {
   const map = new Map();
+  const incomingIds = new Set((Array.isArray(incoming) ? incoming : []).map(_rosterFlightId).filter(Boolean));
+  const removedIds = [];
+
+  // 1 vrk marginaali aikavälin päihin (API:n ja paikallisen ajan rajat voivat erota)
+  if (window_ && window_.from && window_.to) {
+    const shift = (ymd, days) => {
+      const d = new Date(ymd + 'T12:00:00Z');
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().split('T')[0];
+    };
+    window_ = { from: shift(window_.from, 1), to: shift(window_.to, -1) };
+    if (window_.from > window_.to) window_ = null;
+  }
   const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
   const now = Date.now();
 
@@ -25,8 +92,25 @@ function mergeRosterFlights(existing, incoming) {
     map.set(id, f);
   };
 
-  (Array.isArray(existing) ? existing : []).forEach(f => addFlight(f, false));
+  (Array.isArray(existing) ? existing : []).forEach(f => {
+    if (window_ && window_.from && window_.to && f && typeof f === 'object') {
+      const id = _rosterFlightId(f);
+      const d = _rosterFlightDate(f);
+      if (id && d && d >= window_.from && d <= window_.to && !incomingIds.has(id)) {
+        removedIds.push(id);
+        return; // poistettu rosterista
+      }
+    }
+    addFlight(f, false);
+  });
   (Array.isArray(incoming) ? incoming : []).forEach(f => addFlight(f, true));
+
+  if (window_ && window_.from && window_.to) {
+    if (removedIds.length) {
+      console.log(`[Roster] ${removedIds.length} lentoa poistunut rosterista:`, removedIds.join(', '));
+    }
+    _updateRemovedRosterFlightIds(removedIds, Array.from(incomingIds));
+  }
 
   const merged = Array.from(map.values());
   merged.sort((a, b) => {
@@ -252,12 +336,24 @@ window.showRosterChangeModal = showRosterChangeModal;
  * - Sietää verkkokatkokset, tyhjät vastaukset ja timeoutit
  * - Käyttää vain sallittuja lentoyhtiöitä
  * ============================================================== */
+function _rosterMonthRange(monthOffset) {
+  const now = new Date();
+  const firstDay = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const lastDay  = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0);
+  const fmt = (d) => `${d.getFullYear()}-${
+    String(d.getMonth() + 1).padStart(2, '0')}-${
+    String(d.getDate()).padStart(2, '0')}`;
+  return { from: fmt(firstDay), to: fmt(lastDay) };
+}
+
 async function _fetchRosterRange(monthOffset) {
   // 1. Token
+  // HUOM: palauttaa null jos haku epäonnistui (≠ tyhjä kuukausi []),
+  // jotta poistettujen lentojen tunnistus ei tulkitse virhettä poistoksi.
   const token = (typeof getValidSkyplanToken === 'function')
     ? await getValidSkyplanToken().catch(() => null)
     : localStorage.getItem('skyplan_token');
-  if (!token) return [];
+  if (!token) return null;
 
   // 2. Employee ID
   const payload = (typeof decodeJWT === 'function')
@@ -265,19 +361,10 @@ async function _fetchRosterRange(monthOffset) {
     : {};
   const empId = payload.employeeid || payload.EmployeeID || payload.employeeId
              || payload.nameid || payload.sub;
-  if (!empId) return [];
+  if (!empId) return null;
 
   // 3. Aikaväli
-  const now = new Date();
-  const targetMonth = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const firstDay = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
-  const lastDay  = new Date(targetMonth.getFullYear(), targetMonth.getMonth() + 1, 0);
-  const fmt = (d) => `${d.getFullYear()}-${
-    String(d.getMonth() + 1).padStart(2, '0')}-${
-    String(d.getDate()).padStart(2, '0')}`;
-
-  const fromStr = fmt(firstDay);
-  const toStr   = fmt(lastDay);
+  const { from: fromStr, to: toStr } = _rosterMonthRange(monthOffset);
 
   // 4. Fetch + timeout
   const controller = new AbortController();
@@ -303,11 +390,12 @@ async function _fetchRosterRange(monthOffset) {
 
     if (!resp.ok) {
       console.warn(`[Roster] Kuukausi ${monthOffset}: HTTP ${resp.status}`);
-      return [];
+      return null;
     }
 
     const data = await resp.json();
-    const flights = Array.isArray(data.Flights) ? data.Flights : [];
+    if (!data || !Array.isArray(data.Flights)) return null;
+    const flights = data.Flights;
 
     // 5. Suodata sallitut lentoyhtiöt
     const allowedCarriers = ['KC', 'KZR', 'AYN', 'FS'];
@@ -324,7 +412,7 @@ async function _fetchRosterRange(monthOffset) {
     } else {
       console.warn(`[Roster] Kuukausi ${monthOffset} epäonnistui:`, e.message);
     }
-    return [];
+    return null;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -372,8 +460,14 @@ async function forceRosterSync(options = {}) {
       ]);
 
       // 3. Yhdistä — poista duplikaatit ID:n perusteella
+      // Poistojen tunnistus vain jos KAIKKI kolme kuukautta onnistuivat
+      const allMonthsOk = prevFlights !== null && currFlights !== null && nextFlights !== null;
+      const syncWindow = allMonthsOk
+        ? { from: _rosterMonthRange(-1).from, to: _rosterMonthRange(1).to }
+        : null;
+
       const map = new Map();
-      [...prevFlights, ...currFlights, ...nextFlights].forEach(f => {
+      [...(prevFlights || []), ...(currFlights || []), ...(nextFlights || [])].forEach(f => {
         const id = String(f.ID || f.id || f.FlightID || '');
         if (id) map.set(id, f);
       });
@@ -407,12 +501,14 @@ async function forceRosterSync(options = {}) {
     // 5. Päivitä cache (merge) + siivoa vanhentuneet
     try {
       const existing = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]');
-      const merged = mergeRosterFlights(existing, allFlights);
+      const merged = mergeRosterFlights(existing, allFlights, syncWindow);
 
-      // KORJAUS: Poistetaan lennot jotka ovat yli 2 vrk vanhoja (STA + 2 vrk)
-      // Tämä poistaa sekä perutut että jo lennetyt lennot välimuistista.
+      // Poistetaan lennot jotka ovat yli 8 vrk vanhoja (STA + 8 vrk).
+      // HUOM: oli 2 vrk, mutta auto-import katsoo 7 vrk taaksepäin —
+      // lento ehti pudota välimuistista ennen kuin se tuotiin lokikirjaan.
+      // Perutut lennot hoitaa nyt mergeRosterFlights(syncWindow).
       const nowMs = Date.now();
-      const graceMs = 2 * 24 * 60 * 60 * 1000; // 2 vrk
+      const graceMs = 8 * 24 * 60 * 60 * 1000; // 8 vrk
       const removed = [];
 
       const cleanedMerged = merged.filter(f => {

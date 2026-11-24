@@ -43,6 +43,9 @@ const SYNC_MIN_INTERVAL    = 15 * 60 * 1000;
 const SYNC_FULL_INTERVAL   = 6 * 60 * 60 * 1000;
 const AUTOIMPORT_INTERVAL_MS = 15 * 60 * 1000;
 const AUTOIMPORT_LOOKBACK_DAYS = 7;
+const AUTOIMPORT_ATTEMPTS_KEY = 'easa_logbook_import_attempts_v1';
+const OWN_STAFFID_VERIFIED_KEY = 'easa_logbook_own_staffid_verified';
+const AUTOIMPORT_BATCH_SIZE = 8;
 
 /* ==============================================================
  * pdf-lib module-level reference
@@ -473,39 +476,78 @@ window._icaoCoords = _icaoCoords;
  * Civil twilight -6° kynnys.
  * Interpoloi sijainti lähtö/saapuminen välillä.
  * ============================================================== */
-function calculateNightTime(takeoffIso, touchdownIso, depIcao, arrIcao) {
+/* Isoympyräinterpolointi (lyhin reitti pallolla, toimii myös 180°-meridiaanin yli) */
+function _gcPoint(a, b, f) {
+  const r = Math.PI / 180;
+  const la1 = a.lat * r, lo1 = a.lon * r, la2 = b.lat * r, lo2 = b.lon * r;
+  const d = 2 * Math.asin(Math.sqrt(
+    Math.sin((la2 - la1) / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin((lo2 - lo1) / 2) ** 2));
+  if (!d) return { lat: a.lat, lon: a.lon };
+  const A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+  const x = A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
+  const y = A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
+  const z = A * Math.sin(la1) + B * Math.sin(la2);
+  return { lat: Math.atan2(z, Math.hypot(x, y)) / r, lon: Math.atan2(y, x) / r };
+}
+
+/**
+ * calculateNightTime(startIso, endIso, depIcao, arrIcao, opts?)
+ *
+ * EASA (FCL.010 "night", AMC1 FCL.050): yö = iltahämärän (civil twilight,
+ * aurinko 6° horisontin alla) päättymisestä aamuhämärän alkuun.
+ *
+ * KORJAUKSET (2026-11-24):
+ *  - Yöaika lasketaan block-ajasta (off-block → on-block), koska lokikirjan
+ *    "total time of flight" ja yöaika ovat block-aikaa. Ennen laskettiin
+ *    vain ilmassaoloaika (takeoff → touchdown) → yöllinen rullaus jäi pois.
+ *    Anna opts.offBlockIso / opts.onBlockIso; startIso/endIso = takeoff/touchdown.
+ *  - Reitti interpoloidaan isoympyrää pitkin (ennen suora lat/lon-viiva →
+ *    pitkillä itä–länsi-lennoilla jopa ~7 min virhe).
+ *  - Näytteet minuutin keskikohdasta, 30 s välein.
+ *  - Puuttuvat koordinaatit palautetaan tiedoksi (missingCoords) eikä hiljaa 0.
+ * Yönousu/-lasku ratkaistaan edelleen takeoff-/touchdown-hetkestä.
+ */
+function calculateNightTime(takeoffIso, touchdownIso, depIcao, arrIcao, opts = {}) {
   const fallback = { night: '', nightTakeoff: false, nightLanding: false };
 
-  if (typeof SunCalc === 'undefined') return fallback;
-  if (!takeoffIso || !touchdownIso) return fallback;
+  if (typeof SunCalc === 'undefined') return { ...fallback, noSunCalc: true };
 
   const dep = _icaoCoords(depIcao);
   const arr = _icaoCoords(arrIcao);
-  if (!dep || !arr) return fallback;
+  if (!dep || !arr) return { ...fallback, missingCoords: true };
 
-  const t0 = new Date(takeoffIso).getTime();
-  const t1 = new Date(touchdownIso).getTime();
-  if (!isFinite(t0) || !isFinite(t1) || t1 <= t0) return fallback;
+  const ms = (iso) => { const t = iso ? new Date(iso).getTime() : NaN; return isFinite(t) ? t : null; };
+  let tko = ms(takeoffIso), tdn = ms(touchdownIso);
+  let ob0 = ms(opts.offBlockIso), ob1 = ms(opts.onBlockIso);
 
-  const STEP_MS = 60 * 1000;
-  const total = t1 - t0;
+  // Block-aika jos saatavilla, muuten ilmassaoloaika
+  const s0 = ob0 ?? tko, s1 = ob1 ?? tdn;
+  if (s0 == null || s1 == null || s1 <= s0) return fallback;
+  // Ilmassaoloaika: jos puuttuu, koko block-aika "ilmassa"
+  const a0 = (tko != null && tko >= s0 && tko < s1) ? tko : s0;
+  const a1 = (tdn != null && tdn > a0 && tdn <= s1) ? tdn : s1;
+
   const CIVIL_TWILIGHT_RAD = -6 * Math.PI / 180;
+  const isNightAt = (t, lat, lon) =>
+    SunCalc.getPosition(new Date(t), lat, lon).altitude < CIVIL_TWILIGHT_RAD;
 
-  const isNightAt = (ms, lat, lon) => {
-    const pos = SunCalc.getPosition(new Date(ms), lat, lon);
-    return pos.altitude < CIVIL_TWILIGHT_RAD;
+  const posAt = (t) => {
+    if (t <= a0) return dep;            // rullaus lähtökentällä
+    if (t >= a1) return arr;            // rullaus määränpäässä
+    return _gcPoint(dep, arr, (t - a0) / (a1 - a0));
   };
 
+  const STEP_MS = 30 * 1000;
   let nightMs = 0;
-  for (let t = t0; t < t1; t += STEP_MS) {
-    const frac = (t - t0) / total;
-    const lat = dep.lat + (arr.lat - dep.lat) * frac;
-    const lon = dep.lon + (arr.lon - dep.lon) * frac;
-    if (isNightAt(t, lat, lon)) nightMs += STEP_MS;
+  for (let t = s0; t < s1; t += STEP_MS) {
+    const len = Math.min(STEP_MS, s1 - t);
+    const mid = t + len / 2;
+    const p = posAt(mid);
+    if (isNightAt(mid, p.lat, p.lon)) nightMs += len;
   }
 
-  const nightTakeoff = isNightAt(t0, dep.lat, dep.lon);
-  const nightLanding = isNightAt(t1, arr.lat, arr.lon);
+  const nightTakeoff = isNightAt(a0, dep.lat, dep.lon);
+  const nightLanding = isNightAt(a1, arr.lat, arr.lon);
 
   const mins = Math.round(nightMs / 60000);
   if (mins === 0) return { night: '', nightTakeoff, nightLanding };
@@ -641,9 +683,13 @@ function mapJourneyLogToEntry(journeyLog, flightMeta, ownStaffId) {
     : (meta.picNameHint || '');
 
   const isPIC = pic && me && String(pic.staffId) === String(me.staffId);
+  if (me) {
+    try { localStorage.setItem(OWN_STAFFID_VERIFIED_KEY, '1'); } catch (e) {}
+  }
 
 /* --- Yöaika --- */
-const night = calculateNightTime(L.takeoff, L.touchdown, meta.depIcao, meta.arrIcao);
+const night = calculateNightTime(L.takeoff || L.atd, L.touchdown || L.ata, meta.depIcao, meta.arrIcao,
+  { offBlockIso: L.atd, onBlockIso: L.ata });
 entry.operationalCondition = {
   night: night.night || '',
   ifr: blockToHHMM(L.blockTime)
@@ -685,7 +731,17 @@ entry.pilotFunction = {
 
 /* --- Metadata --- */
 entry.skyplan = {
-  flightId: L.flightId || meta.flightId || null,
+  // Pyydetty (roster-)ID voittaa: journey login sisältä poimittu ID voi olla
+  // eri lennon (esim. paluulennon/linkitetyn lennon) ID → toinen lento piiloutuisi.
+  flightId: meta.flightId || L.flightId || null,
+  ownCrewMatched: !!me,
+  // Ohjaamomiehistö yhteenvetoa varten ("eniten lennetty kenen kanssa")
+  crewPilots: pilots.map(c => ({
+    staffId: c.staffId != null ? String(c.staffId) : null,
+    name: `${c.firstName || ''} ${c.lastName || ''}`.trim(),
+    position: String(c.position || '').toUpperCase(),
+    isMe: !!(me && String(c.staffId) === String(me.staffId))
+  })),
   flightNumber: L.flightNumber || meta.flightNumber || '',
   importedAt: new Date().toISOString(),
   atd: L.atd, ata: L.ata, takeoff: L.takeoff, touchdown: L.touchdown,
@@ -750,6 +806,23 @@ async function importLogbookFromJourneyLog(flightId, flightNum, dateStr, flightM
                 || payload.nameid || payload.sub || null;
     } catch (e) {}
 
+    // KORJAUS: Älä tuo lentoa, jolla en ollut miehistössä (esim. rosterista
+    // poistettu lento, jonka joku muu lensi). Tarkistus vain kun oman
+    // staff-ID:n on aiemmin todettu täsmäävän journey login miehistöön.
+    if (options.requireOwnCrew && ownStaffId
+        && Array.isArray(log.crewDuty) && log.crewDuty.length
+        && localStorage.getItem(OWN_STAFFID_VERIFIED_KEY) === '1'
+        && !log.crewDuty.some(c => String(c.staffId) === String(ownStaffId))) {
+      throw new Error(`NOT_ON_CREW: et ole lennon ${flightNum || flightId} miehistössä — ei tuoda.`);
+    }
+
+    // Tuplasuoja: joku toinen ajo ehti jo tuoda tämän lennon
+    const already = getLogbookEntryByFlightId(flightId);
+    if (already) {
+      if (!silent) hideModalLoader();
+      return already;
+    }
+
     const entry = mapJourneyLogToEntry(log, {
       flightId,
       flightNumber: log.flightNumber || flightNum,
@@ -788,7 +861,8 @@ async function importLogbookFromJourneyLog(flightId, flightNum, dateStr, flightM
       }
     } else {
       const msg = String(err?.message || '');
-      const isNotFlown = msg.includes('ATD/ATA') || msg.includes('peruttu');
+      const isNotFlown = msg.includes('ATD/ATA') || msg.includes('peruttu')
+                      || msg.includes('NOT_ON_CREW');
       if (!isNotFlown) {
         console.warn('[AutoImport] Silent fail for', flightNum, ':', msg);
       }
@@ -801,6 +875,78 @@ window.importLogbookFromJourneyLog = importLogbookFromJourneyLog;
 /* ==============================================================
  * LOGBOOK TABLE RENDERER
  * ============================================================== */
+/* ==============================================================
+ * RIVIN TOIMINTOVALIKKO · Allekirjoita / Näytä / Poista
+ * ============================================================== */
+function closeLogbookRowMenu() {
+  const m = document.getElementById('lb-row-menu');
+  if (m) m.remove();
+  document.removeEventListener('pointerdown', _lbRowMenuOutside, true);
+  document.removeEventListener('keydown', _lbRowMenuKey, true);
+  window.removeEventListener('scroll', closeLogbookRowMenu, true);
+  window.removeEventListener('resize', closeLogbookRowMenu);
+}
+window.closeLogbookRowMenu = closeLogbookRowMenu;
+
+function _lbRowMenuOutside(ev) {
+  const m = document.getElementById('lb-row-menu');
+  if (m && !m.contains(ev.target) && !ev.target.closest?.('.lb-row-menu-btn')) closeLogbookRowMenu();
+}
+function _lbRowMenuKey(ev) { if (ev.key === 'Escape') closeLogbookRowMenu(); }
+
+function openLogbookRowMenu(ev, id) {
+  ev?.stopPropagation?.();
+  const btn = ev?.currentTarget || ev?.target?.closest?.('.lb-row-menu-btn');
+  const existing = document.getElementById('lb-row-menu');
+  if (existing) {
+    const same = existing.dataset.id === String(id);
+    closeLogbookRowMenu();
+    if (same) return; // toinen klikkaus samaan nappiin sulkee
+  }
+  const entry = getLogbookEntry(id);
+  if (!entry) return;
+  const signed = !!entry.signatureDataUrl;
+
+  const menu = document.createElement('div');
+  menu.id = 'lb-row-menu';
+  menu.className = 'lb-row-menu';
+  menu.dataset.id = String(id);
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = `
+    <button type="button" role="menuitem" data-act="sign">✍️ ${signed ? 'Muokkaa allekirjoitusta' : 'Allekirjoita'}</button>
+    <button type="button" role="menuitem" data-act="view">👁 Näytä</button>
+    <div class="lb-row-menu-sep"></div>
+    <button type="button" role="menuitem" data-act="delete" class="lb-row-menu-danger">🗑 Poista</button>`;
+  document.body.appendChild(menu);
+
+  // Sijoitus napin alle (tai yläpuolelle jos ei mahdu), oikeaan reunaan tasattuna
+  const r = btn ? btn.getBoundingClientRect() : { left: 20, right: 200, top: 100, bottom: 100 };
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let left = Math.min(window.innerWidth - mw - 8, Math.max(8, r.right - mw));
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  menu.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    closeLogbookRowMenu();
+    if (act === 'sign') promptLogbookSignature(id);
+    else if (act === 'view') showLogbookEntryDetail(id);
+    else if (act === 'delete') deleteLogbookEntry(id);
+  });
+
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _lbRowMenuOutside, true);
+    document.addEventListener('keydown', _lbRowMenuKey, true);
+    window.addEventListener('scroll', closeLogbookRowMenu, true);
+    window.addEventListener('resize', closeLogbookRowMenu);
+  }, 0);
+  menu.querySelector('button')?.focus();
+}
+window.openLogbookRowMenu = openLogbookRowMenu;
+
 function renderLogbookTable() {
   const container = document.getElementById('logbook-container');
   if (!container) return;
@@ -893,18 +1039,9 @@ function renderLogbookTable() {
           <td colspan="4" style="text-align:center; color:var(--dim); font-size:11px;">FSTD-sessio</td>
           <td>${status}</td>
           <td style="text-align:right; white-space:nowrap;">
-            <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px;"
-              onclick="promptLogbookSignature('${e.id}')">
-              ${signed ? 'Muokkaa' : 'Allekirjoita'}
-            </button>
-            <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;"
-              onclick="showLogbookEntryDetail('${e.id}')">Näytä</button>
-            <button class="btn-ghost"
-              style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;
-                    color:var(--error); border-color:var(--error); background:rgba(255,69,58,0.06);"
-              onclick="deleteLogbookEntry('${e.id}')"
-              title="Poista kirjaus pysyvästi">
-              🗑 Poista
+            <button type="button" class="btn-ghost lb-row-menu-btn" aria-haspopup="menu"
+              onclick="openLogbookRowMenu(event, '${e.id}')" title="Allekirjoita, näytä tai poista">
+              ⋯ Toiminnot
             </button>
           </td>
         </tr>`;
@@ -939,18 +1076,9 @@ function renderLogbookTable() {
         <td style="font-family:var(--font-mono); color:#9ec7ff;">${esc(e.operationalCondition?.night || '–')}</td>
         <td>${status}</td>
         <td style="text-align:right; white-space:nowrap;">
-          <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px;"
-            onclick="promptLogbookSignature('${e.id}')">
-            ${signed ? 'Muokkaa' : 'Allekirjoita'}
-          </button>
-          <button class="btn-ghost" style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;"
-            onclick="showLogbookEntryDetail('${e.id}')">Näytä</button>
-          <button class="btn-ghost"
-            style="height:32px; padding:0 12px; font-size:12px; margin-left:6px;
-                  color:var(--error); border-color:var(--error); background:rgba(255,69,58,0.06);"
-            onclick="deleteLogbookEntry('${e.id}')"
-            title="Poista kirjaus pysyvästi">
-            🗑 Poista
+          <button type="button" class="btn-ghost lb-row-menu-btn" aria-haspopup="menu"
+            onclick="openLogbookRowMenu(event, '${e.id}')" title="Allekirjoita, näytä tai poista">
+            ⋯ Toiminnot
           </button>
         </td>
       </tr>`;
@@ -1532,21 +1660,31 @@ async function signAllFlightsForPilot() {
   }
 
   const byPilot = new Map();
+  let pendingSkipped = 0;
   entries.forEach(e => {
     if (e.skyplan?.isFSTD) return;
     if (!e.picName) return;
     if (e.signatureDataUrl) return;
+    // KORJAUS: ⏳-kirjauksia ei allekirjoiteta massana — Skyplan-synkka
+    // päivittäisi niiden nousut/laskut myöhemmin ja katkaisisi ketjun.
+    if (e.skyplan?.takeoffPending || e.skyplan?.landingPending) { pendingSkipped++; return; }
 
-    const key = String(e.picName).trim().toUpperCase();
+    // Sama kapteeni nimijärjestyksestä riippumatta (Skyplan vs AIMS)
+    const key = String(e.picName).trim().toUpperCase().split(/\s+/).filter(Boolean).sort().join(' ');
     if (!byPilot.has(key)) byPilot.set(key, { name: e.picName, entries: [] });
     byPilot.get(key).entries.push(e);
   });
 
   if (byPilot.size === 0) {
     if (typeof showToast === 'function') {
-      showToast('Ei allekirjoittamattomia lentoja.', 'info');
+      showToast(pendingSkipped
+        ? `Ei allekirjoitettavia lentoja (${pendingSkipped} odottaa Skyplan-vahvistusta ⏳).`
+        : 'Ei allekirjoittamattomia lentoja.', 'info', 5000);
     }
     return;
+  }
+  if (pendingSkipped && typeof showToast === 'function') {
+    showToast(`${pendingSkipped} ⏳-lentoa jätetään pois, kunnes Skyplan vahvistaa nousut/laskut.`, 'info', 5000);
   }
 
   const pilotOptions = [...byPilot.entries()].map(([key, data]) => {
@@ -1717,7 +1855,8 @@ async function _promptSignAllModal(data) {
           e.licenseNumber = license || '';
           e.signatureDataUrl = dataUrl;
           e.signedAt = new Date().toISOString();
-          e.sealedAt = new Date().toISOString();
+          // sealLogbookEntry antaa uniikin, ketjun viimeistä myöhemmän aikaleiman
+          e.sealedAt = null;
 
           if (spicChecked) {
             const tt = e.totalTimeOfFlight || '';
@@ -2938,6 +3077,10 @@ function showExportDialog() {
         ${item('sign-all', '✍️', 'Allekirjoita kaikki lennot',
           'Valitse kapteeni ja allekirjoita kaikki avoimet lentonsa.')}
 
+        ${sectionTitle('Korjaukset')}
+        ${item('night-recalc', '🌙', 'Laske yöajat uudelleen',
+          'Allekirjoittamattomat lennot. Näyttää muutokset ennen tallennusta.')}
+
         ${sectionTitle('Vienti')}
         ${item('csv',  '📊', 'CSV (Excel / Numbers)',
           'Kaikki 12 saraketta + audit-metadata.')}
@@ -2980,6 +3123,7 @@ function showExportDialog() {
 
         switch (action) {
           case 'sign-all':   await signAllFlightsForPilot();             break;
+          case 'night-recalc': await recalculateNightTimes({ apply: false, verbose: false }); break;
           case 'csv':        await exportLogbookCSV();                   break;
           case 'json':       await exportLogbookJSON();                  break;
           case 'pdf':        await saveLogbookPDF(window._lbEntries || []); break;
@@ -3287,6 +3431,265 @@ function _rowToEntry(row, map, lineNum, prevDate = '') {
   return entry;
 }
 
+/* ==============================================================
+ * AIMS eCrew "Pilot Logbook" -raportti (JarfclrpReport.csv)
+ * ==============================================================
+ * Muoto:
+ *   AIR ASTANA,,,,Pilot Logbook
+ *   ,,,,01/10/2026 - 31/10/2026
+ *   ,DEPARTURE,,ARRIVAL,,AIRCRAFT,,,,TOFF,,LND,,OPERATED AS,,,SYNTH. DEVICES
+ *   Date,Airport,Time,Airport,Time,Type,Reg.,Flt time,Name PIC,Day,Night,Day,Night,PIC,Co-Plt,Instr,Time,Type
+ *   15183 SUKUNIMI ETUNIMI (NQZ-320-FO)          ← miehistörivi, ohitetaan
+ *   02/10/26,NQZ ,05:39,TAS ,07:37,F320,EI-KFB ,01:58,NIMI ,1,,1,,,01:58,,,
+ *   05/10/26,NQZ ,15:45,NQZ ,19:45,320 ,,,,,,,,,,,04:00,SUPI   ← simulaattori
+ *   Totals :,...                                 ← ohitetaan
+ * Kentät ovat IATA-koodeja, ajat UTC.
+ * ============================================================== */
+const _IATA_ICAO_FALLBACK = {
+  NQZ: 'UACC', TSE: 'UACC', ALA: 'UAAA', CIT: 'UAII', SCO: 'UATE', GUW: 'UATG',
+  AKX: 'UATT', URA: 'UARR', KGF: 'UAKK', PWQ: 'UASP', UKK: 'UASK', PLX: 'UASS',
+  KSN: 'UAUU', DMB: 'UADD', HSA: 'UAIT', DZN: 'UAKD', USJ: 'UAAH', KOV: 'UACK',
+  PPK: 'UACP', BXY: 'UAOL', KZO: 'UAOO', TAS: 'UTTT', SKD: 'UTSS', BHK: 'UTSB',
+  NMA: 'UTFN', FEG: 'UTFF', UGC: 'UTNU', NCU: 'UTNN', TMJ: 'UTST', DYU: 'UTDD',
+  FRU: 'UCFM', OSS: 'UCFO', GYD: 'UBBB', TBS: 'UGTB', BUS: 'UGSB', EVN: 'UDYZ',
+  SVO: 'UUEE', DME: 'UUDD', VKO: 'UUWW', LED: 'ULLI', KZN: 'UWKD', OVB: 'UNNT',
+  IST: 'LTFM', SAW: 'LTFJ', AYT: 'LTAI', LCA: 'LCLK', PFO: 'LCPH', TLV: 'LLBG',
+  DXB: 'OMDB', DWC: 'OMDW', AUH: 'OMAA', SHJ: 'OMSJ', DOH: 'OTHH', JED: 'OEJN',
+  MED: 'OEMA', RUH: 'OERK', SSH: 'HESH', HRG: 'HEGN', CAI: 'HECA', MLE: 'VRMM',
+  DEL: 'VIDP', BOM: 'VABB', GOI: 'VOGO', GOX: 'VOGA', CMB: 'VCBI', KTM: 'VNKT',
+  BKK: 'VTBS', HKT: 'VTSP', ICN: 'RKSI', GMP: 'RKSS', PEK: 'ZBAA', PKX: 'ZBAD',
+  URC: 'ZWWW', PVG: 'ZSPD', CAN: 'ZGGG', HKG: 'VHHH', NRT: 'RJAA', HND: 'RJTT',
+  KUL: 'WMKK', SIN: 'WSSS', DPS: 'WADD', CXR: 'VVCR', SGN: 'VVTS', HAN: 'VVNB',
+  FRA: 'EDDF', MUC: 'EDDM', BER: 'EDDB', LHR: 'EGLL', AMS: 'EHAM', CDG: 'LFPG',
+  FCO: 'LIRF', MXP: 'LIMC', MAD: 'LEMD', BCN: 'LEBL', VIE: 'LOWW', PRG: 'LKPR',
+  WAW: 'EPWA', HEL: 'EFHK', ATH: 'LGAV', HER: 'LGIR', BUD: 'LHBP', TIV: 'LYTV',
+  BJV: 'LTFE', DLM: 'LTBS', ADB: 'LTBJ', ESB: 'LTAC', TZX: 'LTCG'
+};
+
+let _iataIndex = null;
+function _iataToIcao(code) {
+  const c = String(code || '').trim().toUpperCase();
+  if (!c) return '';
+  if (c.length === 4) return c;
+  if (c.length !== 3) return c;
+  if (!_iataIndex) {
+    _iataIndex = {};
+    try {
+      // _airportMemCache tulee airport-db.js:stä (OurAirports, sis. iata_code)
+      const mem = (typeof _airportMemCache !== 'undefined' && _airportMemCache) ? _airportMemCache : null;
+      if (mem) {
+        const rank = t => (t === 'large_airport' ? 3 : t === 'medium_airport' ? 2 : t === 'small_airport' ? 1 : 0);
+        for (const k of Object.keys(mem)) {
+          const a = mem[k];
+          const iata = String(a?.iata || '').trim().toUpperCase();
+          if (iata.length !== 3) continue;
+          const cur = _iataIndex[iata];
+          if (!cur || rank(a.type) > rank(mem[cur]?.type)) _iataIndex[iata] = a.icao || k;
+        }
+      }
+    } catch (e) {}
+    // Jos tietokanta ei vielä latautunut, ei jäädytetä tyhjää indeksiä
+    if (!Object.keys(_iataIndex).length) {
+      const fb = _IATA_ICAO_FALLBACK[c] || c;
+      _iataIndex = null;
+      return fb;
+    }
+  }
+  return _iataIndex[c] || _IATA_ICAO_FALLBACK[c] || c;
+}
+window._iataToIcao = _iataToIcao;
+
+function _aimsTypeToModel(raw) {
+  const t = String(raw || '').trim().toUpperCase();
+  const m = t.match(/(3\d\d)/);
+  if (!m) return t;
+  return 'A' + m[1]; // AIMS-koodi (esim. F320, 321L) säilyy variant-kentässä
+}
+
+function _isAimsLogbookCSV(rows) {
+  return _findAimsHeaderRow(rows) >= 0;
+}
+
+function _findAimsHeaderRow(rows) {
+  for (let i = 0; i < Math.min(15, rows.length); i++) {
+    const r = rows[i].map(c => String(c || '').trim().toUpperCase());
+    if (r[0] === 'DATE' && r[1] === 'AIRPORT' && r.includes('NAME PIC') && r.includes('FLT TIME')) return i;
+  }
+  return -1;
+}
+
+function _parseAimsLogbookCSV(rows) {
+  const hi = _findAimsHeaderRow(rows);
+  const sub = rows[hi].map(c => String(c || '').trim().toUpperCase().replace(/\.$/, ''));
+  const grp = (hi > 0 ? rows[hi - 1] : []).map(c => String(c || '').trim().toUpperCase().replace(/\.$/, ''));
+
+  // Yhdistä ryhmä (forward-fill) + alaotsikko → "TOFF DAY", "SYNTH DEVICES TIME" …
+  const cols = [];
+  let g = '';
+  for (let i = 0; i < sub.length; i++) {
+    if (grp[i]) g = grp[i].replace(/\./g, '');
+    cols.push(g ? `${g} ${sub[i]}` : sub[i]);
+  }
+  const idx = (name) => cols.indexOf(name);
+  const C = {
+    date: 0,
+    dep: idx('DEPARTURE AIRPORT'), depT: idx('DEPARTURE TIME'),
+    arr: idx('ARRIVAL AIRPORT'),   arrT: idx('ARRIVAL TIME'),
+    type: idx('AIRCRAFT TYPE'), reg: idx('AIRCRAFT REG'),
+    flt: idx('AIRCRAFT FLT TIME'), pic: idx('AIRCRAFT NAME PIC'),
+    toD: idx('TOFF DAY'), toN: idx('TOFF NIGHT'),
+    ldD: idx('LND DAY'),  ldN: idx('LND NIGHT'),
+    asPIC: idx('OPERATED AS PIC'), asCO: idx('OPERATED AS CO-PLT'), asIN: idx('OPERATED AS INSTR'),
+    simT: idx('SYNTH DEVICES TIME'), simType: idx('SYNTH DEVICES TYPE')
+  };
+  // Varmistus jos ryhmärivi puuttuu: AIMS:n kiinteä järjestys
+  const fixed = { dep: 1, depT: 2, arr: 3, arrT: 4, type: 5, reg: 6, flt: 7, pic: 8,
+    toD: 9, toN: 10, ldD: 11, ldN: 12, asPIC: 13, asCO: 14, asIN: 15, simT: 16, simType: 17 };
+  for (const k of Object.keys(fixed)) if (C[k] < 0) C[k] = fixed[k];
+
+  const entries = [], skipped = [];
+  const hhmm = (s) => {
+    const t = _normalizeTimeCSV(s);
+    return /^\d{2}:\d{2}$/.test(t) ? t : '';
+  };
+  const dur = (s) => {
+    const m = String(s || '').trim().match(/^(\d{1,3}):(\d{2})$/);
+    return m ? `${parseInt(m[1], 10)}:${m[2]}` : '';
+  };
+
+  for (let i = hi + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const get = (k) => (C[k] >= 0 ? String(row[C[k]] ?? '').trim() : '');
+    const date = _normalizeDateCSV(get('date'));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const nonEmpty = row.filter(c => c && String(c).trim());
+      if (nonEmpty.length) skipped.push({ line: i + 1, preview: nonEmpty.slice(0, 4).join(' | ') });
+      continue;
+    }
+
+    const entry = createLogbookEntry();
+    entry.date = date;
+    const typeRaw = get('type');
+    const simTime = dur(get('simT'));
+    const reg = get('reg').toUpperCase();
+    const flt = dur(get('flt'));
+
+    if (simTime && !reg && !flt) {
+      const simType = get('simType');
+      entry.fstd = {
+        date,
+        type: [_aimsTypeToModel(typeRaw), simType].filter(Boolean).join(' ') || 'FSTD',
+        totalTime: simTime
+      };
+      entry.remarks = simType ? `SIM ${simType}` : '';
+      entry.skyplan = {
+        flightId: null, flightNumber: '', importedAt: new Date().toISOString(),
+        atd: null, ata: null, takeoff: null, touchdown: null, blockTime: null, flightTime: null,
+        source: 'aims-csv', csvLine: i + 1, isFSTD: true,
+        simStart: hhmm(get('depT')), simEnd: hhmm(get('arrT'))
+      };
+      entries.push(entry);
+      continue;
+    }
+
+    const depIata = get('dep').toUpperCase(), arrIata = get('arr').toUpperCase();
+    if (!depIata || !arrIata || !flt) {
+      skipped.push({ line: i + 1, preview: row.filter(Boolean).slice(0, 4).join(' | ') });
+      continue;
+    }
+    const depIcao = _iataToIcao(depIata), arrIcao = _iataToIcao(arrIata);
+    const depT = hhmm(get('depT')), arrT = hhmm(get('arrT'));
+
+    entry.departure = { place: depIcao, time: depT };
+    entry.arrival   = { place: arrIcao, time: arrT };
+    entry.aircraft  = { make: '', model: _aimsTypeToModel(typeRaw), variant: typeRaw, registration: reg };
+    entry.multiPilot = flt;
+    entry.totalTimeOfFlight = flt;
+    entry.picName = get('pic').replace(/\s+/g, ' ').trim();
+    entry.takeoffs = { day: parseInt(get('toD'), 10) || 0, night: parseInt(get('toN'), 10) || 0 };
+    entry.landings = { day: parseInt(get('ldD'), 10) || 0, night: parseInt(get('ldN'), 10) || 0 };
+    entry.pilotFunction = {
+      pic: dur(get('asPIC')), copilot: dur(get('asCO')), dual: '', instructor: dur(get('asIN'))
+    };
+
+    // Ajat ovat UTC → ISO-aikaleimat (yli keskiyön → seuraava päivä)
+    const depIso = depT ? `${date}T${depT}:00Z` : null;
+    let arrIso = null;
+    if (depIso && flt) {
+      const [h, m] = flt.split(':').map(Number);
+      arrIso = new Date(new Date(depIso).getTime() + (h * 60 + m) * 60000).toISOString();
+    }
+
+    // Yöaika SunCalcilla (block-ajoista, likiarvo)
+    let night = '';
+    try {
+      if (depIso && arrIso && typeof calculateNightTime === 'function') {
+        night = calculateNightTime(depIso, arrIso, depIcao, arrIcao,
+          { offBlockIso: depIso, onBlockIso: arrIso }).night || '';
+      }
+    } catch (e) {}
+    entry.operationalCondition = { night, ifr: flt };
+
+    entry.skyplan = {
+      flightId: null, flightNumber: '', importedAt: new Date().toISOString(),
+      atd: depIso, ata: arrIso, takeoff: null, touchdown: null,
+      blockTime: null, flightTime: null,
+      source: 'aims-csv', csvLine: i + 1,
+      iata: { dep: depIata, arr: arrIata }
+    };
+    entries.push(entry);
+  }
+  return { entries, skipped };
+}
+window._parseAimsLogbookCSV = _parseAimsLogbookCSV;
+
+/* ==============================================================
+ * DUPLIKAATTITUNNISTUS (CSV-tuonti ↔ lokikirja)
+ * ==============================================================
+ * Sama lento, jos lähtöhetki on ±45 min sisällä JA joko reitti
+ * (ICAO/IATA normalisoituna) tai rekisteri täsmää. Simulaattori:
+ * sama päivä + sama kesto.
+ * ============================================================== */
+function _entryDepMs(e) {
+  const iso = e.skyplan?.atd || e.skyplan?.takeoff;
+  if (iso) { const t = new Date(iso).getTime(); if (isFinite(t)) return t; }
+  const d = String(e.date || ''), t = String(e.departure?.time || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !/^\d{1,2}:\d{2}$/.test(t)) return null;
+  return new Date(`${d}T${t.padStart(5, '0')}:00Z`).getTime();
+}
+
+function _isFstdEntry(e) {
+  return !!e.skyplan?.isFSTD || !!(e.fstd?.totalTime && !e.departure?.place && !e.arrival?.place);
+}
+
+function _hhmmToMin(s) {
+  const m = String(s || '').match(/^(\d+):(\d{2})/);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+function _isSameLogbookFlight(a, b) {
+  const fa = _isFstdEntry(a), fb = _isFstdEntry(b);
+  if (fa !== fb) return false;
+  if (fa) {
+    return a.date === b.date && _hhmmToMin(a.fstd?.totalTime) === _hhmmToMin(b.fstd?.totalTime);
+  }
+  const ta = _entryDepMs(a), tb = _entryDepMs(b);
+  if (ta == null || tb == null) {
+    // Ei aikoja → vertaa päivä + reitti
+    return a.date === b.date &&
+      _iataToIcao(a.departure?.place) === _iataToIcao(b.departure?.place) &&
+      _iataToIcao(a.arrival?.place) === _iataToIcao(b.arrival?.place);
+  }
+  if (Math.abs(ta - tb) > 45 * 60 * 1000) return false;
+  const routeOk = _iataToIcao(a.departure?.place) === _iataToIcao(b.departure?.place) &&
+                  _iataToIcao(a.arrival?.place) === _iataToIcao(b.arrival?.place);
+  const ra = String(a.aircraft?.registration || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const rb = String(b.aircraft?.registration || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const regOk = ra && rb && ra === rb;
+  return routeOk || regOk;
+}
+window._isSameLogbookFlight = _isSameLogbookFlight;
+
 async function importLogbookFromCSV() {
   return new Promise((resolve) => {
     const input = document.createElement('input');
@@ -3309,9 +3712,22 @@ async function importLogbookFromCSV() {
         const rows = _parseCSV(text, delimiter);
         if (!rows.length) throw new Error('Tiedosto on tyhjä');
 
-        let headerIdx = 0;
-        for (let i = 0; i < Math.min(5, rows.length); i++) {
-          if (rows[i].length > 3) { headerIdx = i; break; }
+        let entries = [];
+        let skipped = [];
+        const isAims = _isAimsLogbookCSV(rows);
+
+        if (isAims) {
+          console.log('[CSV Import] Tunnistettu AIMS eCrew Pilot Logbook -raportti');
+          ({ entries, skipped } = _parseAimsLogbookCSV(rows));
+        } else {
+        // KORJAUS: etsi otsikkorivi joka sisältää päivämääräsarakkeen
+        // (ennen: ensimmäinen rivi jossa > 3 saraketta → otsikkorivit sotkivat)
+        let headerIdx = -1;
+        for (let i = 0; i < Math.min(15, rows.length); i++) {
+          if (rows[i].length > 3 && _buildHeaderMap(rows[i]).date !== -1) { headerIdx = i; break; }
+        }
+        if (headerIdx < 0) {
+          throw new Error('Päivämääräsaraketta ei löytynyt.');
         }
         const headers = rows[headerIdx];
         console.log('[CSV Import] Headerit:', headers);
@@ -3319,12 +3735,6 @@ async function importLogbookFromCSV() {
         const map = _buildHeaderMap(headers);
         console.log('[CSV Import] Header-map:', map);
 
-        if (map.date === -1) {
-          throw new Error('Päivämääräsaraketta ei löytynyt.');
-        }
-
-        const entries = [];
-        const skipped = [];
         let lastDate = '';
 
         for (let i = headerIdx + 1; i < rows.length; i++) {
@@ -3338,6 +3748,7 @@ async function importLogbookFromCSV() {
               skipped.push({ line: i + 1, preview: nonEmpty.slice(0, 4).join(' | ') });
             }
           }
+        }
         }
 
         console.log('[CSV Import] Löytyi', entries.length, 'kirjausta');
@@ -3357,7 +3768,9 @@ async function importLogbookFromCSV() {
           throw new Error('Ei kelvollisia rivejä. Katso konsolin "Hylätyt rivit" -lista.');
         }
 
-        const existing = getLogbookEntries().length;
+        const existingList = getLogbookEntries();
+        const existing = existingList.length;
+        const dupCount = entries.filter(e => existingList.some(x => _isSameLogbookFlight(e, x))).length;
         const bodyHTML = `
           <div style="font-size:13px; color:var(--dim); line-height:1.6;">
             <p style="color:var(--text); font-size:15px; font-weight:700; margin-bottom:12px;">
@@ -3370,6 +3783,9 @@ async function importLogbookFromCSV() {
             ` : ''}
             <div class="kv"><span>Nykyinen lokikirja</span><span>${existing} kirjausta</span></div>
             <div class="kv"><span>Tuotavat rivit</span><span>${entries.length} kirjausta</span></div>
+            <div class="kv"><span>Jo lokikirjassa (ohitetaan)</span><span>${dupCount} kirjausta</span></div>
+            <div class="kv"><span>Uusia lisätään</span><span>${entries.length - dupCount} kirjausta</span></div>
+            ${isAims ? '<p style="font-size:11.5px; margin-top:10px;">AIMS eCrew -raportti: kentät muunnettu ICAO-koodeiksi, ajat UTC. Yöaika laskettu block-ajoista.</p>' : ''}
           </div>
         `;
 
@@ -3409,18 +3825,16 @@ async function importLogbookFromCSV() {
             showToast(`Korvattu ${entries.length} kirjauksella.`, 'success', 5000);
           }
         } else {
+          // KORJAUS: älykäs duplikaattitunnistus (Skyplan-tuonnit, IATA/ICAO,
+          // ±45 min aikaero, rekisteri) — ennen vain täsmälleen sama merkkijono
           const list = _lbReadAll();
-          const existingKeys = new Set(list.map(e =>
-            `${e.date}|${e.departure?.place}|${e.departure?.time}|${e.arrival?.place}|${e.arrival?.time}`
-          ));
           let added = 0, dupes = 0;
           entries.forEach(e => {
-            const key = `${e.date}|${e.departure?.place}|${e.departure?.time}|${e.arrival?.place}|${e.arrival?.time}`;
-            if (existingKeys.has(key)) { dupes++; return; }
+            if (list.some(x => _isSameLogbookFlight(e, x))) { dupes++; return; }
             list.push(e);
             added++;
           });
-          _lbWriteAll(list);
+          await _lbWriteAll(list);
           if (typeof showToast === 'function') {
             showToast(`Lisätty ${added} uutta (${dupes} duplikaattia ohitettu).`, 'success', 5000);
           }
@@ -3548,10 +3962,11 @@ async function syncLogbookWithSkyplan(options = {}) {
     const monthEntries = entriesByMonth.get(month) || [];
     if (!monthEntries.length) continue;
 
-    const hasPending = monthEntries.some(e =>
-      e.skyplan?.takeoffPending || e.skyplan?.landingPending
+    // Allekirjoitettuja (sinetöityjä) kirjauksia ei muuteta synkassa
+    const hasPending = monthEntries.some(e => !e.hash &&
+      (e.skyplan?.takeoffPending || e.skyplan?.landingPending)
     );
-    const hasUnmatched = monthEntries.some(e => !e.skyplan?.flightId);
+    const hasUnmatched = monthEntries.some(e => !e.hash && !e.skyplan?.flightId);
 
     if (onlyPending && !hasPending) continue;
 
@@ -3635,6 +4050,10 @@ async function syncLogbookWithSkyplan(options = {}) {
     }
 
     for (const entry of monthEntries) {
+      // KORJAUS: sinetöityä kirjausta ei saa muuttaa (flightId, ajat,
+      // nousut/laskut kuuluvat hashiin) → muuten ketju katkeaa.
+      if (entry.hash) continue;
+
       if (!entry.skyplan?.flightId && roster.length) {
         const match = _matchEntryToRosterFlight(entry, roster);
         if (match) {
@@ -4020,6 +4439,7 @@ async function recalculateNightTimes(options = {}) {
     if (entry.skyplan?.isFSTD || (entry.fstd?.totalTime && !entry.departure?.place)) {
       stats.skipped++; stats.reason.fstd++; continue;
     }
+    if (entry.hash) { stats.skipped++; continue; } // sinetöity → ei muuteta
     if (onlyMissing && entry.operationalCondition?.night) {
       stats.skipped++; stats.reason.missingOnly++; continue;
     }
@@ -4053,7 +4473,9 @@ async function recalculateNightTimes(options = {}) {
 
     let result;
     try {
-      result = calculateNightTime(takeoffIso, touchdownIso, dep, arr);
+      const blk = _recalcBlockTimes(entry);
+      result = calculateNightTime(takeoffIso, touchdownIso, dep, arr,
+        { offBlockIso: blk.off, onBlockIso: blk.on });
     } catch (e) {
       stats.skipped++; stats.reason.noTime++; continue;
     }
@@ -4143,6 +4565,22 @@ async function recalculateNightTimes(options = {}) {
   return stats;
 }
 window.recalculateNightTimes = recalculateNightTimes;
+
+/* Block-ajat (ATD/ATA) uudelleenlaskentaa varten */
+function _recalcBlockTimes(entry) {
+  const sp = entry.skyplan || {};
+  if (sp.atd && sp.ata) return { off: sp.atd, on: sp.ata };
+  const date = String(entry.date || '').trim();
+  const dt = String(entry.departure?.time || '').trim();
+  const at = String(entry.arrival?.time || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(dt) || !/^\d{2}:\d{2}$/.test(at)) {
+    return { off: null, on: null };
+  }
+  const off = new Date(`${date}T${dt}:00Z`);
+  const on = new Date(`${date}T${at}:00Z`);
+  if (on <= off) on.setUTCDate(on.getUTCDate() + 1);
+  return { off: off.toISOString(), on: on.toISOString() };
+}
 
 function _recalcCombineDateTime(entry, which) {
   if (which === 'departure' && entry.skyplan?.takeoff) {
@@ -4295,6 +4733,7 @@ async function autoSyncLogbook(reason = 'auto') {
 
   const entries = _lbReadAll();
   const pendingCount = entries.filter(e =>
+    !e.hash &&
     e.skyplan?.flightId &&
     !e.skyplan?.isFSTD &&
     (e.skyplan?.takeoffPending || e.skyplan?.landingPending)
@@ -4355,6 +4794,27 @@ let _autoScanInFlight = false;
 let _lastScanAt = 0;
 const SCAN_MIN_INTERVAL_MS = 60 * 1000; // Älä skannaa useammin kuin kerran minuutissa
 
+/* Epäonnistuneiden tuontiyritysten backoff: 15 min, 30 min, 1 h … max 6 h */
+function _readImportAttempts() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(AUTOIMPORT_ATTEMPTS_KEY) || '{}');
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch (e) { return {}; }
+}
+function _writeImportAttempts(obj, cutoffMs) {
+  try {
+    for (const k of Object.keys(obj)) {
+      if (!obj[k] || (obj[k].lastAt || 0) < cutoffMs) delete obj[k];
+    }
+    localStorage.setItem(AUTOIMPORT_ATTEMPTS_KEY, JSON.stringify(obj));
+  } catch (e) {}
+}
+function _importAttemptDue(a, now) {
+  if (!a || !a.count) return true;
+  const waitMs = Math.min(15 * 60 * 1000 * Math.pow(2, a.count - 1), 6 * 60 * 60 * 1000);
+  return now - (a.lastAt || 0) >= waitMs;
+}
+
 async function scanForCompletedFlights() {
   if (_autoScanInFlight) return [];
   if (!navigator.onLine) return [];
@@ -4380,6 +4840,8 @@ async function scanForCompletedFlights() {
     const now = Date.now();
     const lookbackMs = AUTOIMPORT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
 
+    const attempts = _readImportAttempts();
+
     const candidates = roster.filter(f => {
       if (!f || typeof f !== 'object') return false;
 
@@ -4388,15 +4850,29 @@ async function scanForCompletedFlights() {
 
       if (getLogbookEntryByFlightId(flightId)) return false;
 
+      // KORJAUS: rosterista poistettu lento → ei koskaan tuoda
+      if (typeof isFlightRemovedFromRoster === 'function'
+          && isFlightRemovedFromRoster(flightId)) return false;
+
       const sta = new Date(f.StaLt || f.Sta || 0).getTime();
       if (!sta || now < sta + 10 * 60 * 1000) return false;
 
       if (now - sta > lookbackMs) return false;
 
+      // KORJAUS: epäonnistuneet yritykset (peruttu, deadhead, journey log
+      // ei vielä valmis) odottavat vuoroaan eivätkä tuki jonoa. Ennen
+      // korjausta 5 aina epäonnistuvaa lentoa esti uudempien (esim. saman
+      // päivän paluulennon) tuonnin kokonaan.
+      if (!_importAttemptDue(attempts[String(flightId)], now)) return false;
+
       return true;
     });
 
-    const batch = candidates.slice(0, 5);
+    // Uusimmat ensin: juuri päättyneet lennot tuodaan heti
+    candidates.sort((a, b) =>
+      new Date(b.StaLt || b.Sta || 0).getTime() - new Date(a.StaLt || a.Sta || 0).getTime());
+
+    const batch = candidates.slice(0, AUTOIMPORT_BATCH_SIZE);
 
     for (const f of batch) {
       const flightId = f.ID || f.id || f.FlightID;
@@ -4413,11 +4889,18 @@ async function scanForCompletedFlights() {
           aircraftReg:   f.RegistrationNumber,
           aircraftModel: f.AircraftDescription
         },
-        { silent: true }
+        { silent: true, requireOwnCrew: true }
       );
 
-      if (entry) imported.push(entry);
+      if (entry) {
+        imported.push(entry);
+        delete attempts[String(flightId)];
+      } else {
+        const prev = attempts[String(flightId)] || { count: 0 };
+        attempts[String(flightId)] = { count: (prev.count || 0) + 1, lastAt: Date.now() };
+      }
     }
+    _writeImportAttempts(attempts, now - lookbackMs * 2);
 
     try {
       localStorage.setItem(AUTOIMPORT_LAST_SCAN_KEY, String(now));

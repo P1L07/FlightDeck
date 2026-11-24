@@ -10,7 +10,7 @@
  *   - Tukee sekä objekti- että string-viestejä
  * ============================================================== */
 
-const CACHE_VERSION = 'v1.0.1';   // ← pidä samana kuin version.js:APP_VERSION
+const CACHE_VERSION = 'v1.0.7';   // ← pidä samana kuin version.js:APP_VERSION
 const CACHE_NAME = `flightdeck-${CACHE_VERSION}`;
 
 const NETWORK_TIMEOUT_MS = 4000;   // yhteysaikaraja ennen cache-fallbackia
@@ -29,6 +29,7 @@ const LOCAL_ASSETS = [
   './db.js',
   './app.js',
   './logbook.js',
+  './logbook-summary.js',
   './airport-db.js',
   './map.js',
   './ofp-parser.js',

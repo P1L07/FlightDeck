@@ -321,16 +321,6 @@ async function refreshSingleFlightFromRoster(fid, stdIso) {
 }
 window.refreshSingleFlightFromRoster = refreshSingleFlightFromRoster;
 
-
-/* ==============================================================
- * REFRESH TOKEN · uusi access token refresh tokenilla
- * ==============================================================
- * Endpoint: POST /api/v1/auth/refresh-token
- * Header:   mobile-version: 1.2.0.94
- * Body:     { RefreshToken: "<current>" }
- * Response: { AccessToken, RefreshToken } ← molemmat uusia
- * ============================================================== */
-
 /* ==============================================================
  * REFRESH TOKEN · uusi access token refresh tokenilla
  * ==============================================================
@@ -726,7 +716,7 @@ window.loadAssignedFlights = async function(isManualSearch = false, forceOnlineS
     try {
       const existing = JSON.parse(localStorage.getItem(cacheKey) || '[]');
       const merged = (typeof window.mergeRosterFlights === 'function')
-        ? window.mergeRosterFlights(existing, flights)
+        ? window.mergeRosterFlights(existing, flights, { from: fromStr, to: toStr })
         : flights;
       localStorage.setItem(cacheKey, JSON.stringify(merged));
       localStorage.setItem(cacheTimeKey, syncTimeString);

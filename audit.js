@@ -77,10 +77,21 @@ function _getPrevSealedEntry(entry) {
 async function sealLogbookEntry(entry) {
   if (!entry || !entry.id) throw new Error('sealLogbookEntry: entry.id required');
 
+  // KORJAUS: uusi sinetti saa aina ketjun viimeistä myöhemmän aikaleiman.
+  // Ennen: "Allekirjoita kaikki" saattoi antaa kahdelle kirjaukselle saman
+  // millisekunnin → edellinen lenkki valittiin väärin → ketju katkesi.
+  if (!entry.sealedAt) {
+    let t = Date.now();
+    for (const e of getLogbookEntries()) {
+      if (!e.hash || e.id === entry.id || !e.sealedAt) continue;
+      const st = new Date(e.sealedAt).getTime();
+      if (isFinite(st) && st >= t) t = st + 1;
+    }
+    entry.sealedAt = new Date(t).toISOString();
+  }
+
   const prev = _getPrevSealedEntry(entry);
   const prevHash = prev ? prev.hash : null;
-
-  if (!entry.sealedAt) entry.sealedAt = new Date().toISOString();
 
   const payload = canonicalizeEntry(entry) + '|' + (prevHash || '');
   entry.prevHash = prevHash;
@@ -143,6 +154,54 @@ async function verifyLogbookChain() {
         results
     };
 }
+
+/* ---------- Ketjun uudelleensinetöinti ----------
+ * Laskee kaikkien allekirjoitettujen kirjausten hashit uudelleen
+ * sinetöintijärjestyksessä NYKYISILLÄ tiedoilla. Tapahtuma ja vanhat
+ * hashit kirjataan audit-lokiin, joten korjaus on jäljitettävissä.
+ */
+async function repairLogbookChain() {
+    const all = getLogbookEntries()
+        .filter(e => e.hash)
+        .sort((a, b) => new Date(a.sealedAt || 0) - new Date(b.sealedAt || 0));
+    if (!all.length) return 0;
+
+    const before = await verifyLogbookChain();
+    const oldHashes = {};
+    let prevHash = null;
+    let lastT = 0;
+    for (const e of all) {
+        let t = new Date(e.sealedAt || 0).getTime() || Date.now();
+        if (t <= lastT) t = lastT + 1;
+        lastT = t;
+        e.sealedAt = new Date(t).toISOString();
+        oldHashes[e.id] = e.hash;
+        e.prevHash = prevHash;
+        e.hash = await sha256Hex(canonicalizeEntry(e) + '|' + (prevHash || ''));
+        e.hashAlgo = 'SHA-256';
+        e.hashVersion = 1;
+        prevHash = e.hash;
+    }
+
+    _auditAppend({
+        type: 'rechain',
+        at: new Date().toISOString(),
+        count: all.length,
+        brokenBefore: before.results.filter(r => !r.overallOk).map(r => r.id),
+        oldHashes,
+        device: navigator.userAgent.slice(0, 120)
+    });
+
+    // Tallenna koko lista (samat objektit → muutokset mukana)
+    const list = getLogbookEntries();
+    if (typeof dbReplaceAll === 'function') await dbReplaceAll(list);
+    else if (typeof _lbWriteAll === 'function') await _lbWriteAll(list);
+
+    if (typeof renderLogbookTable === 'function') renderLogbookTable();
+    await renderChainStatusBadge();
+    return all.length;
+}
+window.repairLogbookChain = repairLogbookChain;
 
 /* ---------- Audit-loki (append-only) ---------- */
 function _auditRead() {
@@ -227,12 +286,44 @@ function showChainDetails(v) {
         </div>
     `;
 
+    if (v.intact) {
+        createModal({
+            title: 'Audit Trail',
+            icon: '🔒',
+            bodyHTML: body,
+            confirmText: 'Sulje',
+            maxWidth: '720px'
+        });
+        return;
+    }
+
+    const repairNote = `
+        <div style="margin-top:14px; padding:10px 12px; font-size:12px; line-height:1.5;
+                    background:var(--input); border-radius:8px; color:var(--dim);">
+            <b style="color:var(--text);">Sinetöi ketju uudelleen</b> laskee kaikkien
+            allekirjoitettujen kirjausten hashit uudelleen nykyisillä tiedoilla.
+            Tarkista ensin, että ✕-merkityt kirjaukset ovat oikein.
+            Korjaus ja vanhat hashit kirjataan audit-lokiin.
+        </div>`;
+
     createModal({
         title: 'Audit Trail',
-        icon: v.intact ? '🔒' : '⚠️',
-        bodyHTML: body,
-        confirmText: 'Sulje',
-        maxWidth: '720px'
+        icon: '⚠️',
+        bodyHTML: body + repairNote,
+        confirmText: 'Sinetöi ketju uudelleen',
+        cancelText: 'Sulje',
+        maxWidth: '720px',
+        onConfirm: async () => {
+            try {
+                const n = await repairLogbookChain();
+                if (typeof showToast === 'function') {
+                    showToast(`Ketju sinetöity uudelleen (${n} kirjausta).`, 'success', 5000);
+                }
+            } catch (err) {
+                console.error('[Audit] repair failed:', err);
+                if (typeof showToast === 'function') showToast('Korjaus epäonnistui: ' + err.message, 'error', 6000);
+            }
+        }
     });
 }
 window.showChainDetails = showChainDetails;
