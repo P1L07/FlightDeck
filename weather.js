@@ -458,7 +458,6 @@ async function renderHomeDashboard() {
       <button class="hm-icao hm-icao-dep" data-icao="${dep}" type="button">${dep}</button>
       <span class="hm-arrow">→</span>
       <button class="hm-icao hm-icao-arr" data-icao="${arr}" type="button">${arr}</button>
-      <span class="hm-flight">${flightNum}</span>
     </div>
     <div class="hm-info" id="hm-info-primary">
             <button type="button" class="hm-takeoff-btn"
@@ -471,18 +470,6 @@ async function renderHomeDashboard() {
       <div class="hm-info-item">
         <span class="hm-info-label">Aika (UTC)</span>
         <span class="hm-info-value">${std} → ${sta}</span>
-      </div>
-      <div class="hm-info-item">
-        <span class="hm-info-label">Kone</span>
-        <span class="hm-info-value">
-          ${canOpenDefects
-            ? `<button type="button" data-reg="${regSafe}"
-                 style="background:none; border:none; padding:0; margin:0;
-                        color:var(--accent); font-family:inherit; font-size:inherit;
-                        font-weight:inherit; line-height:inherit; cursor:pointer;
-                        text-decoration:underline; text-underline-offset:2px;">${regSafe}</button>`
-            : regSafe}
-        </span>
       </div>
       <div class="hm-info-item" id="hm-stand-item" ${stand ? '' : 'style="display:none;"'}>
         <span class="hm-info-label">Stand</span>
@@ -740,6 +727,8 @@ async function renderHomeDashboard() {
           if (loadGen !== _homeLoadGen) return;
           waypointList = wpData.waypoints || [];
           window._allOFPWaypoints = wpData.allWaypoints || wpData.waypoints || [];
+          window._homeOfpFid = fid;
+          try { if (typeof updateTopbarCountdown === 'function') updateTopbarCountdown(); } catch (e) {}
         }
       } catch (e) {
         const msg = String(e?.message || '');

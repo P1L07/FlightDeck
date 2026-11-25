@@ -208,6 +208,7 @@ async function showWaypointPopup(waypoint, flightId, options = {}) {
       if (typeof showToast === 'function') {
         showToast(`Waypoint ${name} tallennettu.`, 'success', 2000);
       }
+      if (typeof updateTopbarCountdown === 'function') updateTopbarCountdown();
 
       // Refresh map to show updated waypoint color
       const mapEl = document.getElementById('fc-map');
@@ -430,7 +431,7 @@ async function showTakeoffModal(flight, fid, prefillAto = null) {
   }
   if (typeof window.createModal !== 'function') return;
 
-  const inputStyle = 'width:100%; padding:10px 12px; border-radius:8px; background:var(--input); color:var(--text); border:1px solid var(--border); font-size:14px; box-sizing:border-box; font-family:var(--font-mono);';
+  const inputStyle = 'width:100%; padding:10px 12px; border-radius:8px; background:var(--input); color:var(--text); border:1px solid var(--border); font-size:14px; box-sizing:border-box; font-family:var(--font-mono); min-width:0; max-width:100%; display:block; -webkit-appearance:none; appearance:none;';
 
   const bodyHTML = `
     <div style="display:flex; flex-direction:column; gap:14px;">
@@ -492,6 +493,7 @@ async function showTakeoffModal(flight, fid, prefillAto = null) {
       if (typeof showToast === 'function') {
         showToast(`Takeoff tallennettu: ${ato}${fuel ? ' · ' + fuel + ' kg' : ''}`, 'success');
       }
+      if (typeof updateTopbarCountdown === 'function') updateTopbarCountdown();
 
       // Päivitetään vain lähin kenttä, ei koko dashboardia
       if (typeof window._updateNearestAirport === 'function') {

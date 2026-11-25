@@ -10,7 +10,7 @@
  *   - Tukee sekä objekti- että string-viestejä
  * ============================================================== */
 
-const CACHE_VERSION = 'v1.0.23';   // ← pidä samana kuin version.js:APP_VERSION
+const CACHE_VERSION = 'v1.0.29';   // ← pidä samana kuin version.js:APP_VERSION
 const CACHE_NAME = `flightdeck-${CACHE_VERSION}`;
 
 const NETWORK_TIMEOUT_MS = 4000;   // yhteysaikaraja ennen cache-fallbackia

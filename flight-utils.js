@@ -334,77 +334,203 @@ function updateTopbarCountdown() {
   const el = document.getElementById('topbar-countdown');
   const timeEl = document.getElementById('topbar-countdown-time');
   if (!el || !timeEl) return;
+  const iconEl = el.querySelector('.tc-icon');
+  // Lentonumero + rekisteri omana ryhmänään pillerin vasemmalla puolella (kellon tyyliin)
+  let grp = document.getElementById('topbar-flight');
+  if (!grp) {
+    grp = document.createElement('div');
+    grp.id = 'topbar-flight';
+    grp.className = 'topbar-flight';
+    el.parentElement.insertBefore(grp, el);
+  }
+  let fltEl = grp.querySelector('.tc-flt');
+  if (!fltEl) {
+    fltEl = document.createElement('span');
+    fltEl.className = 'tc-flt';
+    grp.appendChild(fltEl);
+  }
+  let regEl = grp.querySelector('.tc-reg');
+  if (!regEl) {
+    regEl = document.createElement('button');
+    regEl.type = 'button';
+    regEl.className = 'tc-reg';
+    regEl.title = 'ADD / CDD';
+    regEl.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const tail = regEl.dataset.reg;
+      if (tail && typeof showDefectsPopup === 'function') showDefectsPopup(tail);
+    });
+    fltEl.after(regEl);
+  }
 
   const roster = _afGetRoster();
-  if (!roster.length) {
-    el.style.display = 'none';
-    return;
+  let etaEl = document.getElementById('topbar-eta');
+  if (!etaEl) {
+    etaEl = document.createElement('div');
+    etaEl.id = 'topbar-eta';
+    etaEl.className = 'topbar-eta';
+    const clock = document.getElementById('live-clock');
+    (clock || el).after(etaEl);
   }
+  etaEl.style.display = 'none';
+  if (!roster.length) { el.style.display = 'none'; grp.style.display = 'none'; return; }
 
+  // KORJAUS: kaikki vertailut UTC:nä (Std/Sta + toteutuneet ajat), ei StdLt/StaLt-paikallisaikoja
   const now = Date.now();
-    const next = roster
-    .filter(f => {
-      const std = new Date(f.StdLt || f.Std || 0).getTime();
-      const sta = new Date(f.StaLt || f.Sta || 0).getTime();
-      if (!std) return false;
+  const cands = roster
+    .map(f => ({ f, a: (typeof getFlightActuals === 'function') ? getFlightActuals(f) : null }))
+    .filter(x => x.a && x.a.stdMs && !x.a.done && (x.a.active || x.a.arrMs + 30 * 60e3 > now))
+    .sort((x, y) => x.a.depMs - y.a.depMs);
+  const next = cands.find(x => x.a.active) || cands[0];
+  if (!next) { el.style.display = 'none'; grp.style.display = 'none'; return; }
+  grp.style.display = '';
 
-      // 1. Tuleva lento (15 min grace ennen lähtöä)
-      if (std > now - 15 * 60 * 1000) return true;
+  const { f, a } = next;
+  const c = String(f.CarrierCode || '').trim(), n = String(f.FlightNumber || '').trim();
+  fltEl.textContent = (c && n.startsWith(c)) ? n : `${c}${n}`;
+  const tail = String(f.RegistrationNumber || '').trim();
+  const okTail = tail && tail !== '-' && tail !== 'TBA';
+  regEl.textContent = okTail ? tail : '';
+  regEl.dataset.reg = okTail ? tail : '';
+  regEl.style.display = okTail ? '' : 'none';
+  if (okTail) _tbUpdateMelColor(regEl, tail);
 
-      // 2. Käynnissä oleva lento (STD < nyt < STA + 30 min grace)
-      if (std <= now && sta && now < sta + 30 * 60 * 1000) return true;
-
-      // 3. Journey-log kertoo että lennolla (ATD asetettu, ATA ei)
-      const fid = String(f.ID || f.id || f.FlightID || '');
-      const log = _getCachedJourneyLog(fid);
-      if (log?.atd && !log?.ata) return true;
-
-      return false;
-    })
-    .sort((a, b) =>
-      new Date(a.StdLt || a.Std || 0) - new Date(b.StdLt || b.Std || 0))[0];
-
-  if (!next) {
-    el.style.display = 'none';
-    return;
+  // 🛬 ETA: aktiivinen lento tai tuleva lento, jolle OFP on saatavilla
+  const eta = (typeof computeFlightEta === 'function') ? computeFlightEta(f, a) : null;
+  if (eta && (a.active || eta.hasOfp)) {
+    const d = new Date(eta.ms);
+    const hhmm = `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+    etaEl.innerHTML = `<span class="te-icon">🛬</span><span class="te-time">${hhmm}</span>`;
+    etaEl.title = ({ TD: 'Touchdown', WP: 'ETA (viimeisin ATO + OFP)', TO: 'ETA (takeoff + OFP trip)', PLAN: 'ETA (STD/ETD + taxi + OFP trip)', STA: 'STA' })[eta.src] || 'ETA';
+    etaEl.dataset.src = eta.src;
+    etaEl.style.display = '';
   }
-
-  const stdMs = new Date(next.StdLt || next.Std || 0).getTime();
-  const diff = stdMs - now;
-
   el.style.display = '';
 
-  if (diff <= 0) {
-    const fid = String(next.ID || next.id || next.FlightID || '');
-    const log = _getCachedJourneyLog(fid);
-    if (log?.atd && !log?.ata) {
-      timeEl.textContent = '';
-      el.querySelector('.tc-icon').textContent = '✈';
-    } else {
-      timeEl.textContent = 'Nyt';
-      el.querySelector('.tc-icon').textContent = '🛫';
-    }
+  const fmt = (ms) => {
+    const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+    if (h >= 24) return `${Math.floor(h / 24)}pv ${String(h % 24).padStart(2, '0')}h`;
+    return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m} min`;
+  };
+
+  if (a.active) {
+    // Lennolla: aika saapumiseen (ATA/ETA/STA)
+    iconEl.textContent = '✈';
+    const left = a.arrMs - now;
+    timeEl.textContent = left > 0 ? fmt(left) : '';
+    el.title = 'In flight';
     return;
   }
-
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-
-  if (h >= 24) {
-    const d = Math.floor(h / 24);
-    const hh = h % 24;
-    timeEl.textContent = `${d}pv ${String(hh).padStart(2,'0')}h`;
-  } else if (h > 0) {
-    timeEl.textContent = `${h}h ${String(m).padStart(2,'0')}m`;
-  } else {
-    timeEl.textContent = `${m} min`;
+  const diff = a.depMs - now;
+  if (diff <= 0) {
+    iconEl.textContent = '🛫';
+    timeEl.textContent = 'Nyt';
+    return;
   }
-
-  el.querySelector('.tc-icon').textContent = '😴';
+  iconEl.textContent = '😴';
+  timeEl.textContent = fmt(diff);
 }
 window.updateTopbarCountdown = updateTopbarCountdown;
 
+/* ==============================================================
+ * ETA (laskeutuminen) · takeoff-aika + OFP:n reittipisteiden ajat
+ * ==============================================================
+ * Prioriteetti:
+ *   1. Touchdown (journey log)                         → src 'TD'
+ *   2. Viimeisin waypointille kirjattu ATO + jäljellä oleva OFP-aika → 'WP'
+ *   3. Takeoff-aika (käsin / journey log) + OFP trip   → 'TO'
+ *   4. ATD/ETD/STD + 10 min rullaus + OFP trip         → 'PLAN'
+ *   5. Ei OFP:tä → ETA/STA rosterista                  → 'STA'
+ * ============================================================== */
+function computeFlightEta(f, a) {
+  if (!f) return null;
+  a = a || getFlightActuals(f);
+  if (!a) return null;
+  const fid = String(f.ID || f.id || f.FlightID || '');
+  if (a.onMs) return { ms: a.onMs, src: 'TD', hasOfp: true };
+
+  // OFP-reittipisteet (välimuisti)
+  let wps = [];
+  try {
+    const c = JSON.parse(localStorage.getItem('notam_wp_cache_v3') || '{}')[fid];
+    wps = (c?.data?.allWaypoints || c?.data?.waypoints || []).filter(w => w && w.totalMins != null && isFinite(w.totalMins));
+  } catch (e) {}
+  if (!wps.length && Array.isArray(window._allOFPWaypoints) && String(window._homeOfpFid || '') === fid) {
+    wps = window._allOFPWaypoints.filter(w => w && w.totalMins != null && isFinite(w.totalMins));
+  }
+  const hasOfp = wps.length > 0;
+  if (!hasOfp) {
+    const ms = a.etaMs ?? a.staMs;
+    return ms ? { ms, src: 'STA', hasOfp: false } : null;
+  }
+  const trip = Math.max(...wps.map(w => +w.totalMins));
+
+  // Takeoff-aika
+  let toMs = null;
+  try {
+    const ctx = (typeof Cache !== 'undefined') ? Cache.get(`flight:context:${fid}`, { mode: 'persist' })?.value : null;
+    toMs = utcMs(ctx?.takeoffIso);
+  } catch (e) {}
+  if (!toMs) toMs = a.offMs;
+
+  // Viimeisin kirjattu ATO
+  if (toMs && typeof getAllWaypointLogs === 'function') {
+    const logs = getAllWaypointLogs(fid) || {};
+    let best = null;
+    for (const w of wps) {
+      const lg = logs[String(w.name || '').toUpperCase()];
+      const m = String(lg?.ato || '').match(/^(\d{1,2}):?(\d{2})$/);
+      if (!m) continue;
+      const base = new Date(toMs);
+      let ms = Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate(), +m[1], +m[2]);
+      if (ms < toMs - 12 * 3600e3) ms += 24 * 3600e3;
+      if (ms < toMs - 30 * 60e3) ms += 24 * 3600e3;        // yli puolenyön
+      if (!best || +w.totalMins > best.tm) best = { tm: +w.totalMins, ms };
+    }
+    if (best) return { ms: best.ms + (trip - best.tm) * 60e3, src: 'WP', hasOfp };
+  }
+  if (toMs) return { ms: toMs + trip * 60e3, src: 'TO', hasOfp };
+  const dep = a.atdMs ?? a.etdMs ?? a.stdMs;
+  return dep ? { ms: dep + (10 + trip) * 60e3, src: 'PLAN', hasOfp } : null;
+}
+window.computeFlightEta = computeFlightEta;
+
+/* Rekisterin väri: keltainen, jos avoimissa ADD/CDD-vioissa on MEL-kohde */
+const _tbMelCheckedAt = {};
+// Vain oikea MEL-viitenumero (esim. 34-01-22B) muuttaa värin keltaiseksi
+const _TB_MEL_RE = /\b\d{2}-\d{2}-\d{2}(?:-\d{1,2})?[A-Z]?\b/i;
+function _tbHasMel(defects) {
+  return (defects || []).some(d => d && ['MelNumber', 'MELNumber', 'melNumber', 'Mel', 'MEL', 'mel']
+    .some(k => d[k] != null && _TB_MEL_RE.test(String(d[k]))));
+}
+function _tbUpdateMelColor(regEl, tail) {
+  const key = String(tail).trim().toUpperCase();
+  // 1. Välimuisti heti
+  try {
+    const raw = localStorage.getItem((typeof ADD_CACHE_PREFIX !== 'undefined' ? ADD_CACHE_PREFIX : 'add_cache_') + key);
+    if (raw) regEl.classList.toggle('has-mel', _tbHasMel(JSON.parse(raw)));
+  } catch (e) {}
+  // 2. Tuore haku enintään 20 min välein
+  if (typeof fetchAircraftDefects !== 'function') return;
+  if (Date.now() - (_tbMelCheckedAt[key] || 0) < 20 * 60e3) return;
+  _tbMelCheckedAt[key] = Date.now();
+  fetchAircraftDefects(key).then(list => {
+    if (regEl.dataset.reg === tail) regEl.classList.toggle('has-mel', _tbHasMel(list));
+  }).catch(() => {});
+}
+
 setInterval(updateTopbarCountdown, 60000);
+// Päivitä yläpalkki heti käynnistyksessä ja kun kotisivun reitti/OFP on ladattu
+(function () {
+  const kick = () => { try { updateTopbarCountdown(); } catch (e) {} };
+  const afterRoute = () => {
+    const p = window._homeRouteLoadPromise;
+    if (p && typeof p.then === 'function') p.then(kick, kick);
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { kick(); afterRoute(); });
+  else { kick(); afterRoute(); }
+  setTimeout(kick, 3000);
+})();
 
 window.addEventListener('storage', (ev) => {
   if (ev.key === 'assigned_flights_cache') updateTopbarCountdown();

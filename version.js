@@ -8,7 +8,7 @@
  * ============================================================== */
 'use strict';
 
-const APP_VERSION = '1.0.23';
+const APP_VERSION = '1.0.29';
 const APP_BUILD   = '2026-11-25';
 const APP_KEY     = '_app_version';
 

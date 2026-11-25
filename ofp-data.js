@@ -505,6 +505,8 @@ window.buildAirportData = buildAirportData;
  *              totalMins, fob, rawTime, page, y_anchor }]
  * ============================================================== */
 
+// KORJAUS: avain puuttui kokonaan → reittipisteitä ei koskaan tallennettu välimuistiin
+const NOTAM_WP_CACHE_KEY = 'notam_wp_cache_v3';
 const NOTAM_WP_TTL = 60 * 60 * 1000;
 
 async function parseWaypoints(page, pageNum) {
