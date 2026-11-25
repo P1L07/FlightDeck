@@ -69,32 +69,48 @@ function extractNOTAMs(fullText) {
   const lines = Array.isArray(fullText) ? fullText : String(fullText || '').split('\n');
   const notams = [];
   let currentNotam = null;
+  let pendingHeading = '';
 
-  const notamStartRegex = /^(?:-\s*)?([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})|^NOTAM\s*([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i;
+  // KORJAUS: uusi NOTAM voi alkaa myös "NEW UACC K3063/26", "REPL ...", "NOTAMUACC ..."
+  // tai "- UACC ...". Ennen "NEW"-alkuiset jäivät edellisen NOTAMin perään.
+  const notamStartRegex = /^(?:-\s*)?(?:(?:NEW|REPL|CNL|NOTAM[NRC]?)\s*)?([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})\b/i;
   const stopMarkers = ['ARRIVAL:', 'OTHER:', 'DEPARTURE:', '---', 'PAGE', 'FLY ARYSTAN BRIEF', 'AIR ASTANA BRIEF', 'FIR:', 'REGION:', 'NOT CLASSIFIED', 'FIRE AND RESCUE', 'METAR', 'TAF', 'SPECI', 'ACC:', 'CTR:', 'TMA:', 'ENROUTE:', 'ALTERNATE:'];
 
-  lines.forEach(line => {
-    const trimmed = String(line || '').trim();
-    if (!trimmed) return;
+  // OFP:n kategoriaotsikko NOTAMien välissä: lyhyt, isoilla kirjaimilla, ei numeroita
+  // eikä pistettä (esim. "RWY", "ACFT STAND", "TWY", "NAV AIDS").
+  const isHeading = (t) => t.length <= 24 && /^[A-Z][A-Z /&-]*$/.test(t) && t.split(/\s+/).length <= 3;
+
+  const flush = () => {
+    if (currentNotam) notams.push(currentNotam.join('\n'));
+    currentNotam = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = String(lines[i] || '').trim();
+    if (!trimmed) continue;
     const upper = trimmed.toUpperCase();
 
-    if (stopMarkers.some(m => upper.startsWith(m))) {
-      if (currentNotam) {
-        notams.push(currentNotam.join('\n'));
-        currentNotam = null;
-      }
-      return;
-    }
+    if (stopMarkers.some(m => upper.startsWith(m))) { flush(); pendingHeading = ''; continue; }
 
     if (notamStartRegex.test(trimmed)) {
-      if (currentNotam) notams.push(currentNotam.join('\n'));
+      flush();
       currentNotam = [trimmed];
-    } else if (currentNotam) {
-      currentNotam.push(trimmed);
+      if (pendingHeading) currentNotam.push(`#CAT ${pendingHeading}`);
+      pendingHeading = '';
+      continue;
     }
-  });
 
-  if (currentNotam) notams.push(currentNotam.join('\n'));
+    // Otsikkorivi, jota seuraa uusi NOTAM → kuuluu seuraavalle, ei edelliselle
+    const next = String(lines.slice(i + 1).find(l => String(l || '').trim()) || '').trim();
+    if (isHeading(upper) && (!next || notamStartRegex.test(next))) {
+      flush();
+      pendingHeading = upper;
+      continue;
+    }
+
+    if (currentNotam) currentNotam.push(trimmed);
+  }
+  flush();
 
   const keywords = ['RWY', 'TWY', 'CLSD', 'U/S', 'NOT AVBL', 'WIP', 'FIRE', 'BIRD', 'BA', 'ICE', 'SNOW', 'SLUSH', 'ILS', 'VOR', 'NDB', 'DME', 'RNAV', 'GPS', 'RNP', 'APU', 'DE-ICING', 'STAND', 'ACFT', 'RWYCC', 'FROST', 'POOR', 'MEDIUM', 'NIL', 'WATER', 'COMPACTED', 'DRY', 'WET'];
 

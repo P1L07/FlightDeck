@@ -263,6 +263,12 @@ async function renderTripInfoCard(containerId, flight) {
 
   const hasOFP = !!ofp;
 
+  // OFP:tä ei vielä julkaistu → koko Trip info -kortti piiloon (briefingissä)
+  if (!hasOFP) {
+    const card = el.closest('.card');
+    if (card && containerId === 'bf-tripinfo') { card.style.display = 'none'; return; }
+  }
+
   // Fallbackit
   const captain = crew.captain || localStorage.getItem(TRIP_CAPTAIN_KEY) || '';
   const fc = crew.fc || 2;

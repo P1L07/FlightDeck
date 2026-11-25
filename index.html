@@ -28,6 +28,7 @@
 <script defer src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 
 <!-- 2. Versio + migraatiot -->
+<script src="i18n.js"></script>
 <script defer src="version.js"></script>
 <script defer src="db.js"></script>
 
@@ -61,6 +62,7 @@
 <script defer src="briefing.js"></script>
 <script defer src="tripinfo.js"></script>
 <script defer src="notam.js"></script>
+<script defer src="tour.js"></script>
 </head>
 
 <body>
@@ -171,10 +173,6 @@
   <section class="tab-panel" id="tab-briefing">
     <div class="section-head">
       <h2>Lennon briefing</h2>
-      <div class="section-actions">
-        <button class="btn-ghost" onclick="forceRefreshBriefing()">⟳ Päivitä</button>
-        <button class="btn-ghost" onclick="openBriefingOFP()">✈ Avaa OFP</button>
-      </div>
     </div>
     <div id="briefing-container"><div class="empty">Ladataan…</div></div>
   </section>
@@ -192,8 +190,8 @@
       <span id="chain-status" class="chain-status" style="display:none;"></span>
       <div class="section-actions">
         <div id="logbook-view-toggle" class="lbs-toggle">
-          <button type="button" class="vt-btn active" data-view="list" onclick="setLogbookView('list')">Kirjaukset</button>
-          <button type="button" class="vt-btn" data-view="summary" onclick="setLogbookView('summary')">📊 Yhteenveto</button>
+          <button type="button" class="vt-btn active" data-view="summary" onclick="setLogbookView('summary')">📊 Yhteenveto</button>
+          <button type="button" class="vt-btn" data-view="list" onclick="setLogbookView('list')">Kirjaukset</button>
         </div>
         <button class="btn-ghost" onclick="showExportDialog()" title="Lokikirjan toiminnot">⚙ Toiminnot</button>
       </div>
@@ -252,6 +250,23 @@
       <div class="card-label">AUTOROUTER API KEY</div>
       <input type="text" id="autorouter_key" class="mono" placeholder="eyJhbGciOiJSUzI1NiIs...">
       <div class="row-flex end"><button class="btn-primary" onclick="saveAutoRouterKey()">Tallenna</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">KIELI / LANGUAGE</div>
+      <div class="row-flex">
+        <select id="app-lang-select" onchange="setLang(this.value)" style="flex:1; padding:10px; border-radius:8px; background:var(--input); color:var(--text); border:1px solid var(--border); font-size:14px;">
+          <option value="fi">Suomi</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+      <script>document.getElementById('app-lang-select').value = (window.getLang ? getLang() : 'fi');</script>
+    </div>
+
+    <div class="card">
+      <div class="card-label">OPASTUS</div>
+      <div style="font-size:12.5px; color:var(--dim); margin-bottom:12px; line-height:1.5;">Käy sovelluksen tärkeimmät toiminnot läpi vaihe vaiheelta.</div>
+      <div class="row-flex end"><button class="btn-primary" onclick="startTour(true)">▶ Näytä opastus</button></div>
     </div>
 
     <div class="card">
@@ -411,7 +426,7 @@ function tickClock() {
   const el = document.getElementById('live-clock');
   if (!el) return;
   const now = new Date();
-  el.textContent = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+  el.textContent = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, "0")}`;
   el.title = 'UTC';
 }
 setInterval(tickClock, 1000);
@@ -688,7 +703,7 @@ window._boot = _boot;
 /* BOOT · DOMContentLoaded (3-vaiheinen kevennetty käynnistys) */
 document.addEventListener('DOMContentLoaded', async () => {
   const boot = window._boot;
-  const _bootSafety = setTimeout(() => boot?.hide(), 10000); // 10s fallback
+  const _bootSafety = setTimeout(() => boot?.hide(), 25000); // 25s fallback
 
   // ==========================================
   // VAIHE 1: KRIITTINEN (Pakollinen ennen UI:ta)
@@ -718,17 +733,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   boot?.setStep('map', 'active');
   boot?.setSub('Rendering map…');
-  if (typeof _initHomeDashboard === 'function') {
-    _initHomeDashboard('boot').then(() => boot?.setStep('map', 'done')).catch(() => boot?.setStep('map', 'done'));
-  } else { boot?.setStep('map', 'done'); }
+  const _dashP = (typeof _initHomeDashboard === 'function')
+    ? _initHomeDashboard('boot').catch(() => {})
+    : Promise.resolve();
+  _dashP.then(() => boot?.setStep('map', 'done'));
 
+  // KORJAUS: reitti (OFP → NOTAMit + waypointit) ladataan oikeasti ennen kuin
+  // latausruutu piilotetaan. Ennen vaihe merkittiin valmiiksi heti, ja lataus
+  // tapahtui vasta myöhemmin "Ladataan reittiä…" -popupissa.
   boot?.setStep('route', 'active');
-  boot?.setStep('route', 'done');
-
-  // Piilotetaan latausruutu heti, kun kartta on saatu piirrettyä!
-  clearTimeout(_bootSafety);
-  boot?.setSub('Ready');
-  setTimeout(() => boot?.hide(), 300); 
+  (async () => {
+    await _dashP;
+    boot?.setSub('Loading route…');
+    try {
+      await Promise.race([
+        window._homeRouteLoadPromise || Promise.resolve(),
+        new Promise(r => setTimeout(r, 20000))
+      ]);
+    } catch (e) {}
+    boot?.setStep('route', 'done');
+    clearTimeout(_bootSafety);
+    boot?.setSub('Ready');
+    setTimeout(() => boot?.hide(), 300);
+  })();
 
   // ==========================================
   // VAIHE 3: TAUSTATYÖT (Eivät blokkaa käyttöliittymää)

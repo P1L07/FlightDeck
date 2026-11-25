@@ -10,7 +10,7 @@
  *   - Tukee sekä objekti- että string-viestejä
  * ============================================================== */
 
-const CACHE_VERSION = 'v1.0.7';   // ← pidä samana kuin version.js:APP_VERSION
+const CACHE_VERSION = 'v1.0.23';   // ← pidä samana kuin version.js:APP_VERSION
 const CACHE_NAME = `flightdeck-${CACHE_VERSION}`;
 
 const NETWORK_TIMEOUT_MS = 4000;   // yhteysaikaraja ennen cache-fallbackia
@@ -25,6 +25,7 @@ const LOCAL_ASSETS = [
   './styles.css',
 
   // Sovellusmoduulit
+  './i18n.js',
   './version.js',
   './db.js',
   './app.js',
@@ -47,6 +48,7 @@ const LOCAL_ASSETS = [
   './briefing.js',
   './tripinfo.js',
   './notam.js',
+  './tour.js',
 
   // PWA-ikonit
   './apple-touch-icon.png',

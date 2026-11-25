@@ -265,6 +265,7 @@ function promptForLogin() {
             const token = await loginWithCredentials(u, p);
             if (typeof showToast === 'function') showToast('Kirjautuminen onnistui', 'success');
             finish(token);
+            if (typeof maybeStartTour === 'function') maybeStartTour(1500);
           } catch (e) {
             if (err) { err.style.display = 'block'; err.textContent = e.message; }
             if (btn) { btn.disabled = false; btn.textContent = 'Kirjaudu'; }

@@ -6,7 +6,9 @@
  * - Viikkonavigaatio: ← → Tänään
  * ============================================================== */
 
-const WV_DAY_NAMES = ['SU','MA','TI','KE','TO','PE','LA'];
+const WV_DAY_NAMES = (window.getLang && getLang() === 'en')
+  ? ['SUN','MON','TUE','WED','THU','FRI','SAT']
+  : ['SU','MA','TI','KE','TO','PE','LA'];
 const WV_MONTHS_FI = ['tammi','helmi','maalis','huhti','touko','kesä',
                      'heinä','elo','syys','loka','marras','joulu'];
 

@@ -163,25 +163,43 @@ window.parseCrewFromJourneyLog = parseCrewFromJourneyLog;
 function extractStandNumber(flight, log) {
   if (!flight) return null;
 
-  const candidates = [
-    'DepartureGateNumber',
-    'DepartureStand',
-    'DepStand',
-    'StandDep',
-    'DepartureLocationNumber',
-    'GateNumber',
-    'StandNumber',
-    'Stand'
+  // KORJAUS: ennen DepartureGateNumber (portti, esim. "A1") voitti aina,
+  // vaikka Skyplanissa oli erikseen oikea stand (esim. "9R").
+  // Nyt stand-kentät ensin, portti vasta viimeisenä varana.
+  const ok = v => v != null && String(v).trim() !== '' && String(v).trim() !== '-';
+  const standFirst = [
+    'DepartureStand', 'DepartureStandNumber', 'DepartureStandCode', 'DepStand', 'StandDep',
+    'DepartureParkingPosition', 'DepartureParkingStand', 'DepartureParking',
+    'ParkingPosition', 'ParkingStand', 'StandNumber', 'Stand',
+    'DepartureLocationNumber'
   ];
-
-  for (const k of candidates) {
-    const v = flight[k];
-    if (v != null && String(v).trim() !== '' && String(v).trim() !== '-') {
-      return { value: String(v).trim(), field: k };
+  for (const k of standFirst) {
+    if (ok(flight[k])) return { value: String(flight[k]).trim(), field: k };
+  }
+  // Tuntematon kenttänimi: mikä tahansa lähtöön liittyvä stand/parking-kenttä
+  for (const k of Object.keys(flight)) {
+    if (/stand|park/i.test(k) && !/arr/i.test(k) && ok(flight[k]) && typeof flight[k] !== 'object') {
+      return { value: String(flight[k]).trim(), field: k };
     }
+  }
+  for (const k of ['DepartureGateNumber', 'GateNumber']) {
+    if (ok(flight[k])) return { value: String(flight[k]).trim(), field: k, isGate: true };
   }
   return null;
 }
+
+/* UTC-aika "HH:MM" Skyplanin ISO-ajasta. Std/Sta ovat UTC:tä; jos merkkijonossa
+ * on aikavyöhyke (Z tai +hh:mm), muunnetaan Date-olion kautta. */
+function fmtUtcHHMM(iso) {
+  if (!iso) return '--:--';
+  const s = String(iso);
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d)) return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`;
+  }
+  return s.includes('T') ? s.split('T')[1].substring(0, 5) : s;
+}
+window.fmtUtcHHMM = fmtUtcHHMM;
 window.extractStandNumber = extractStandNumber;
 
 /* ==============================================================
@@ -599,3 +617,144 @@ window.debugBlockFuel = async function(flightId) {
   const r = await getBlockFuelFromOFP(fid);
   return r;
 };
+/* ==============================================================
+ * LENNON TILA · toteutuneet ajat (ATD / takeoff / touchdown / ATA)
+ * ==============================================================
+ * Skyplanin Std/Sta ovat UTC:tä ilman aikavyöhykettä → parsitaan
+ * UTC:nä. Toteutuneet ajat tulevat journey-logista (välimuisti) tai
+ * lokikirjan kirjauksesta. Näin lento tunnistetaan lennetyksi myös,
+ * jos se laskeutui (tai lähti) suunniteltua aiemmin.
+ * ============================================================== */
+function utcMs(iso) {
+  if (!iso) return null;
+  const s = String(iso).trim();
+  if (!s) return null;
+  const ms = /(Z|[+-]\d{2}:?\d{2})$/.test(s) ? Date.parse(s) : Date.parse(s + 'Z');
+  return isFinite(ms) ? ms : null;
+}
+
+function _fsPick(o, keys) {
+  if (!o) return null;
+  for (const k of keys) if (o[k] != null && String(o[k]).trim() !== '' && String(o[k]).trim() !== '-') return o[k];
+  return null;
+}
+
+function getFlightActuals(f) {
+  if (!f) return null;
+  const fid = String(f.ID || f.id || f.FlightID || '');
+  const log = (typeof _getCachedJourneyLog === 'function' ? _getCachedJourneyLog(fid) : null) || null;
+  const lb = (typeof getLogbookEntryByFlightId === 'function' ? getLogbookEntryByFlightId(fid) : null)?.skyplan || null;
+
+  const stdMs = utcMs(f.Std) ?? utcMs(f.StdLt);
+  const staMs = utcMs(f.Sta) ?? utcMs(f.StaLt);
+  const etdMs = utcMs(_fsPick(f, ['Etd', 'ETD', 'EstimatedDeparture']));
+  const etaMs = utcMs(_fsPick(f, ['Eta', 'ETA', 'EstimatedArrival']));
+  const atdMs = utcMs(log?.atd) ?? utcMs(lb?.atd) ?? utcMs(_fsPick(f, ['Atd', 'ATD', 'ActualDeparture']));
+  const ataMs = utcMs(log?.ata) ?? utcMs(lb?.ata) ?? utcMs(_fsPick(f, ['Ata', 'ATA', 'ActualArrival']));
+  const offMs = utcMs(log?.takeoff) ?? utcMs(lb?.takeoff);
+  const onMs  = utcMs(log?.touchdown) ?? utcMs(lb?.touchdown);
+
+  const depMs = atdMs ?? etdMs ?? stdMs;            // paras arvio lähdöstä (off-block)
+  const arrMs = ataMs ?? etaMs ?? staMs;            // paras arvio saapumisesta (on-block)
+  const now = Date.now();
+
+  let state;
+  if (ataMs || (onMs && now > onMs + 10 * 60e3) || lb) state = 'done';
+  else if (onMs) state = 'landed';                  // laskeutunut, rullaa
+  else if (offMs) state = 'air';
+  else if (atdMs) state = 'out';                    // off-block, ei vielä ilmassa
+  else if (arrMs && now > arrMs + 30 * 60e3) state = 'done';   // ei dataa, mutta aika ohi
+  else state = 'planned';
+
+  return { fid, stdMs, staMs, etdMs, etaMs, atdMs, ataMs, offMs, onMs, depMs, arrMs, state,
+           done: state === 'done', active: state === 'out' || state === 'air' || state === 'landed' };
+}
+
+/* Päivän (duty) sektorit: ketjutetaan lennot, joiden väli < 10 h */
+function getDutySectors(f, roster) {
+  if (!f) return [];
+  const list = (roster || []).filter(x => (utcMs(x.Std) ?? utcMs(x.StdLt)) && (utcMs(x.Sta) ?? utcMs(x.StaLt)))
+    .slice().sort((a, b) => (utcMs(a.Std) ?? utcMs(a.StdLt)) - (utcMs(b.Std) ?? utcMs(b.StdLt)));
+  const id = x => String(x.ID || x.id || x.FlightID || '');
+  let i = list.findIndex(x => id(x) === id(f));
+  if (i < 0) return [f];
+  const GAP = 10 * 3600e3;
+  let a = i, b = i;
+  while (a > 0 && (utcMs(list[a].Std) ?? utcMs(list[a].StdLt)) - (utcMs(list[a - 1].Sta) ?? utcMs(list[a - 1].StaLt)) < GAP) a--;
+  while (b < list.length - 1 && (utcMs(list[b + 1].Std) ?? utcMs(list[b + 1].StdLt)) - (utcMs(list[b].Sta) ?? utcMs(list[b].StaLt)) < GAP) b++;
+  return list.slice(a, b + 1);
+}
+
+/* Päivitä journey-logit päivän sektoreille, jotka ovat alkaneet (toteutuneet ajat) */
+const _fsJlFetchedAt = {};
+async function refreshDutyActuals(sectors, force) {
+  if (typeof fetchJourneyLog !== 'function' || !navigator.onLine) return false;
+  const now = Date.now();
+  const todo = (sectors || []).filter(f => {
+    const a = getFlightActuals(f);
+    if (!a || a.ataMs) return false;
+    if (now < (a.depMs ?? 0) - 45 * 60e3) return false;           // ei vielä alkanut
+    if (now > (a.arrMs ?? 0) + 12 * 3600e3) return false;         // liian vanha
+    return force || !(now - (_fsJlFetchedAt[a.fid] || 0) < 3 * 60e3);
+  });
+  if (!todo.length) return false;
+  const token = (typeof getValidSkyplanToken === 'function') ? await getValidSkyplanToken().catch(() => null) : null;
+  if (!token) return false;
+  let changed = false;
+  for (const f of todo) {
+    const fid = String(f.ID || f.id || f.FlightID || '');
+    _fsJlFetchedAt[fid] = Date.now();
+    try {
+      const before = _getCachedJourneyLog(fid);
+      const log = await fetchJourneyLog(fid, token);
+      if (log) {
+        _cacheJourneyLog(fid, log);
+        if (!before || before.atd !== log.atd || before.ata !== log.ata ||
+            before.takeoff !== log.takeoff || before.touchdown !== log.touchdown) changed = true;
+      }
+    } catch (e) { /* 422 = ei vielä saatavilla */ }
+  }
+  return changed;
+}
+
+window.utcMs = utcMs;
+window.getFlightActuals = getFlightActuals;
+window.getDutySectors = getDutySectors;
+window.refreshDutyActuals = refreshDutyActuals;
+
+/* Toteutuneiden aikojen automaattinen päivitys:
+ *  - heti kun nettiyhteys palaa (online-tapahtuma)
+ *  - kun sovellus tulee taas näkyviin (visibilitychange)
+ *  - 3 min välein, kun sovellus on auki ja verkossa
+ * Haetaan vain alkaneille lennoille (viim. 14 h), joilta ATA puuttuu. */
+let _fsAutoBusy = false;
+async function refreshRecentActuals(force) {
+  if (_fsAutoBusy || !navigator.onLine) return;
+  _fsAutoBusy = true;
+  try {
+    let roster = [];
+    try { roster = JSON.parse(localStorage.getItem('assigned_flights_cache') || '[]'); } catch (e) {}
+    const now = Date.now();
+    const recent = (Array.isArray(roster) ? roster : []).filter(f => {
+      const s = utcMs(f.Std) ?? utcMs(f.StdLt);
+      return s && s < now + 60 * 60e3 && s > now - 14 * 3600e3;
+    });
+    if (!recent.length) return;
+    const changed = await refreshDutyActuals(recent, force);
+    if (changed) {
+      if (typeof _bfRefreshDayCard === 'function') _bfRefreshDayCard();
+      if (typeof renderHomeDashboard === 'function' && document.querySelector('#tab-home.active')) {
+        renderHomeDashboard().catch?.(() => {});
+      }
+      if (typeof updateTopbarCountdown === 'function') updateTopbarCountdown();
+    }
+  } catch (e) {
+  } finally { _fsAutoBusy = false; }
+}
+window.refreshRecentActuals = refreshRecentActuals;
+window.addEventListener('online', () => setTimeout(() => refreshRecentActuals(true), 1500));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') setTimeout(() => refreshRecentActuals(true), 800);
+});
+setInterval(() => { if (document.visibilityState === 'visible') refreshRecentActuals(false); }, 3 * 60e3);
+setTimeout(() => refreshRecentActuals(false), 8000);

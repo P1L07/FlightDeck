@@ -335,12 +335,16 @@ function _findCurrentAndNextFlights() {
     return { f, std, sta };
   }).filter(x => x.std && x.sta);
 
-  const current = withTimes.find(x =>
-    now >= x.std - WITH_GRACE_BEFORE && now <= x.sta + WITH_GRACE_AFTER
-  );
+  // KORJAUS: toteutuneet ajat → lennetty lento ei ole "nykyinen", vaikka laskeutui etuajassa
+  const _act = f => (typeof getFlightActuals === 'function') ? getFlightActuals(f) : null;
+  const current = withTimes.find(x => {
+    const a = _act(x.f);
+    if (a) return !a.done && (a.active || (now >= a.depMs - WITH_GRACE_BEFORE && now <= a.arrMs + WITH_GRACE_AFTER));
+    return now >= x.std - WITH_GRACE_BEFORE && now <= x.sta + WITH_GRACE_AFTER;
+  });
 
   const upcoming = withTimes
-    .filter(x => x.std > now)
+    .filter(x => x.std > now && !(_act(x.f)?.done))
     .sort((a, b) => a.std - b.std)[0];
 
   if (!current && !upcoming && withTimes.length) {
@@ -430,8 +434,9 @@ async function renderHomeDashboard() {
   const flightNum = (carrier && fltNo.startsWith(carrier)) ? fltNo : `${carrier}${fltNo}`;
   const dep = String(flight.DepartureStationIcaoCode || flight.DepartureStationCode || '').toUpperCase();
   const arr = String(flight.ArrivalStationIcaoCode || flight.ArrivalStationCode || '').toUpperCase();
-  const std = _homeFmtTime(flight.StdLt || flight.Std);
-  const sta = _homeFmtTime(flight.StaLt || flight.Sta);
+  // KORJAUS: ajat UTC:nä (Std/Sta), ei paikallisaikana (StdLt/StaLt)
+  const std = fmtUtcHHMM(flight.Std || flight.StdLt);
+  const sta = fmtUtcHHMM(flight.Sta || flight.StaLt);
   const tailNumber = String(flight.RegistrationNumber || '').trim();
   const reg = String(tailNumber || flight.AircraftDescription || 'TBA').trim();
   const canOpenDefects = tailNumber && tailNumber !== '-' && tailNumber !== 'TBA';
@@ -464,7 +469,7 @@ async function renderHomeDashboard() {
           ✈️
         </button>
       <div class="hm-info-item">
-        <span class="hm-info-label">Aika</span>
+        <span class="hm-info-label">Aika (UTC)</span>
         <span class="hm-info-value">${std} → ${sta}</span>
       </div>
       <div class="hm-info-item">
@@ -654,8 +659,8 @@ async function renderHomeDashboard() {
     }
   };
 
-  // Asynkroninen OFP/NOTAM/WX-lataus
-  (async () => {
+  // Asynkroninen OFP/NOTAM/WX-lataus (promise talteen, jotta boot-latausruutu voi odottaa sitä)
+  window._homeRouteLoadPromise = (async () => {
     const loadGen = ++_homeLoadGen;
 
     let skipLoader = false;
@@ -669,7 +674,12 @@ async function renderHomeDashboard() {
       const notamFresh = notamHit && (Date.now() - new Date(notamHit.at).getTime()) < 30 * 60 * 1000;
 
       if (wpFresh && notamFresh) skipLoader = true;
+      // KORJAUS: jos välimuistissa on jo reitti (vaikka vanhempi), piirretään se heti
+      // ja päivitetään taustalla ilman estävää popupia.
+      if (wpHit && notamHit && !wpHit?.data?.is422) skipLoader = true;
     } catch (e) {}
+    // Käynnistyksessä latausruutu näyttää etenemisen → ei erillistä popupia
+    if (document.getElementById('boot-overlay')) skipLoader = true;
 
     let loaderShown = false;
     let loaderTimer = null;
@@ -711,6 +721,10 @@ async function renderHomeDashboard() {
       // 2. Rakenna kenttälista
       if (typeof buildAirportData === 'function') {
         notamAirports = buildAirportData(notams, flight);
+        // Sama oleellisuuslogiikka kuin Briefissä (voimassaolo + DLY-aikataulut)
+        if (typeof splitAirportNotamsForFlight === 'function') {
+          splitAirportNotamsForFlight(notamAirports, flight);
+        }
         extraAirports = notamAirports.filter(a => a.role === 'ALTN' || a.role === 'NOTAM');
       }
 
@@ -846,7 +860,7 @@ window.renderHomeDashboard = renderHomeDashboard;
 /* ==============================================================
  * Kartan sisäinen popup
  * ============================================================== */
-async function showAirportPopupInline(airport, position, container, allAirports) {
+async function showAirportPopupInline(airport, position, container, allAirports, opts = {}) {
   if (!airport || !container) return;
 
   /* --- Täydennä DEP/DEST puuttuvat NOTAMit --- */
@@ -882,8 +896,8 @@ async function showAirportPopupInline(airport, position, container, allAirports)
 
   const cw = container.clientWidth;
   const ch = container.clientHeight;
-  const TOP_INSET    = 96;
-  const BOTTOM_INSET = 110;
+  const TOP_INSET    = opts.topInset ?? 96;
+  const BOTTOM_INSET = opts.bottomInset ?? 110;
   const PAD          = 12;
   const minY = TOP_INSET;
   const maxY = ch - BOTTOM_INSET;
@@ -993,27 +1007,38 @@ async function showAirportPopupInline(airport, position, container, allAirports)
     </div>`;
   }
 
-  if (airport.notams && airport.notams.length) {
-    const order = { critical: 0, warning: 1, info: 2 };
-    const sorted = [...airport.notams].sort((a, b) => order[a.severity] - order[b.severity]);
-    html += `<div class="notam-popup-section">
-      <div class="notam-popup-head">
-        <span>NOTAMit</span>
-        <span class="notam-popup-badge" style="color:var(--error); border-color:var(--error);">${airport.notams.length}</span>
-      </div>`;
-    sorted.forEach(n => {
-      const sevColor = n.severity === 'critical' ? 'var(--error)'
-                     : n.severity === 'warning' ? 'var(--warning)' : 'var(--accent)';
-      html += `
+  const _lvl = n => (typeof _bfNotamLevel === 'function') ? _bfNotamLevel(n)
+    : (n.severity === 'critical' ? 'bad' : n.severity === 'warning' ? 'warn' : 'ok');
+  const _itemHTML = n => {
+    const l = _lvl(n);
+    const sevColor = l === 'bad' ? 'var(--error)' : l === 'warn' ? 'var(--warning)' : 'var(--accent)';
+    const txt = (typeof _bfNotamBody === 'function') ? _bfNotamBody(n.text) : n.text;
+    return `
         <div class="notam-popup-item" style="border-left-color:${sevColor};">
           <div class="notam-popup-item-head">
             ${n.id ? `<span class="notam-popup-id">${esc(n.id)}</span>` : ''}
             <span class="notam-popup-type">${esc(n.type || '')}</span>
           </div>
-          <div class="notam-popup-text">${esc(n.text)}</div>
+          <div class="notam-popup-text">${esc(txt)}</div>
         </div>`;
-    });
-    html += `</div>`;
+  };
+  const _ord = { bad: 0, warn: 1, ok: 2 };
+  const relN = [...(airport.notams || [])].sort((a, b) => _ord[_lvl(a)] - _ord[_lvl(b)]);
+  const othN = airport.otherNotams || [];
+  if (relN.length || othN.length) {
+    const worst = relN.length ? _lvl(relN[0]) : 'ok';
+    const bc = worst === 'bad' ? 'var(--error)' : worst === 'warn' ? 'var(--warning)' : 'var(--success)';
+    html += `<div class="notam-popup-section">
+      <div class="notam-popup-head">
+        <span>NOTAMit · oleelliset</span>
+        <span class="notam-popup-badge" style="color:${bc}; border-color:${bc};">${relN.length}</span>
+      </div>
+      ${relN.length ? (typeof renderNotamGroups === 'function' ? renderNotamGroups(relN, _itemHTML, { small: true }) : relN.map(_itemHTML).join('')) : '<div style="font-size:11px; color:var(--dim); padding:4px 0;">Ei voimassa lennon aikana.</div>'}
+      ${othN.length ? `<details style="margin-top:8px;">
+        <summary style="cursor:pointer; font-size:11px; color:var(--dim); font-weight:700;">Ei oleelliset (${othN.length})</summary>
+        ${typeof renderNotamGroups === 'function' ? renderNotamGroups(othN, _itemHTML, { small: true }) : othN.map(_itemHTML).join('')}
+      </details>` : ''}
+    </div>`;
   }
 
   body.innerHTML = html;
@@ -1199,10 +1224,11 @@ function renderHomeDayFlights() {
     const flightNum = (carrier && fltNo.startsWith(carrier)) ? fltNo : `${carrier}${fltNo}`;
     const dep = String(f.DepartureStationIcaoCode || f.DepartureStationCode || '?');
     const arr = String(f.ArrivalStationIcaoCode   || f.ArrivalStationCode   || '?');
-    const std = String(f.StdLt || f.Std || '').split('T')[1]?.substring(0,5) || '--:--';
-    const sta = String(f.StaLt || f.Sta || '').split('T')[1]?.substring(0,5) || '--:--';
+    const std = fmtUtcHHMM(f.Std || f.StdLt);
+    const sta = fmtUtcHHMM(f.Sta || f.StaLt);
     const reg = String(f.RegistrationNumber || '').trim();
-    const stand = f.DepartureGateNumber ? String(f.DepartureGateNumber).trim() : '';
+    const _st = (typeof extractStandNumber === 'function') ? extractStandNumber(f, null) : null;
+    const stand = _st ? _st.value : '';
     const mins = Number(f.DurationMinutes) || 0;
 
     const stdT = new Date(f.StdLt || f.Std || 0).getTime();
@@ -1217,7 +1243,7 @@ function renderHomeDayFlights() {
 
     return `
       <div class="home-day-flight ${stateClass}">
-        <div class="hdf-time">${std} → ${sta}</div>
+        <div class="hdf-time">${std} → ${sta}<small> UTC</small></div>
         <div class="hdf-route">
           <span class="hdf-flt">${flightNum}</span>
           <span class="hdf-icao">${dep} → ${arr}</span>

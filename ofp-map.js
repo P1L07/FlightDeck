@@ -298,7 +298,8 @@ async function renderNotamMap(container, airports, options = {}) {
       .on('pointerdown', (ev) => ev.stopPropagation())
       .on('click', (ev) => {
         ev.stopPropagation();
-        showAirportNotamModal(airport);
+        if (typeof options.onMarkerClick === 'function') options.onMarkerClick(airport, ev);
+        else showAirportNotamModal(airport);
       })
       .on('mouseover', function () { d3.select(this).attr('fill', color).attr('fill-opacity', 0.15); })
       .on('mouseout', function () { d3.select(this).attr('fill', 'transparent'); });

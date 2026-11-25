@@ -269,7 +269,7 @@ async function _notamReadPDFLines(pdfBytes) {
 function _notamParseHeader(notamText) {
   const firstLine = String(notamText || '').split('\n')[0].trim();
 
-  const m1 = firstLine.match(/^(?:-\s*)?([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i);
+  const m1 = firstLine.match(/^(?:-\s*)?(?:(?:NEW|REPL|CNL|NOTAM[NRC]?)\s*)?([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i);
   if (m1) return { airport: m1[1].toUpperCase(), id: m1[2].toUpperCase() };
 
   const m2 = firstLine.match(/^NOTAM\s*([A-Z]{4})\s+([A-Z]{1,2}\d{4}\/\d{2})/i);
@@ -335,7 +335,7 @@ async function parseOFPsForNotams(flightId) {
   if (!fid) throw new Error('Ei Flight ID:tä');
 
   // localStorage-cache
-  const cached = Cache.get(`notam:ofp:${fid}`, { mode: 'persist' });
+  const cached = Cache.get(`notam:ofp2:${fid}`, { mode: 'persist' });
   if (cached?.value) return cached.value;
 
   if (typeof extractNOTAMs !== 'function') {
@@ -348,7 +348,7 @@ async function parseOFPsForNotams(flightId) {
   } catch (err) {
     if (err.code === 'OFP_NOT_AVAILABLE' || String(err.message).includes('422')) {
       const data = { flightId: fid, notams: [], at: new Date().toISOString(), is422: true };
-      Cache.set(`notam:ofp:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
+      Cache.set(`notam:ofp2:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
       return data;
     }
     throw err;
@@ -364,7 +364,7 @@ async function parseOFPsForNotams(flightId) {
   };
 
   // Tallenna localStorageen
-  Cache.set(`notam:ofp:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
+  Cache.set(`notam:ofp2:${fid}`, data, { ttlMs: NOTAM_OFP_TTL, mode: 'persist' });
   return data;
 }
 window.parseOFPsForNotams = parseOFPsForNotams;

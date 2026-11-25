@@ -96,6 +96,8 @@ function createModal(options, legacyMessage = '', legacyConfirm = 'OK', legacyCa
     const dialog = document.createElement('div');
     dialog.style.cssText = `position: fixed; inset: 0; background: rgba(0,0,0,0.8);
       display: flex; justify-content: center; align-items: center; z-index: 10001;
+      padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+      box-sizing: border-box;
       backdrop-filter: blur(5px); animation: fadeIn 0.2s ease;`;
 
     const color = type === 'error' ? 'var(--error, #ff3b30)' : 'var(--accent, #007aff)';
@@ -114,18 +116,22 @@ function createModal(options, legacyMessage = '', legacyConfirm = 'OK', legacyCa
       <div style="background: var(--panel, #1c1c1e); border-radius: 20px;
                   padding: ${compact ? '15px' : '30px'}; max-width: ${width}; width: 90%;
                   border: 2px solid ${color}; box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-                  text-align: left;">
-        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+                  text-align: left; box-sizing: border-box;
+                  max-height: 100%; display: flex; flex-direction: column;">
+        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px; flex: none;">
           <span style="font-size: 40px;">${icon}</span>
           <div>
             <h2 style="color: ${color}; margin: 0; font-size: 24px;">${title || 'Notice'}</h2>
             ${showVersion ? `<p style="color: var(--dim, #8e8e93); margin: 5px 0 0 0;">Version ${showVersion}</p>` : ''}
           </div>
         </div>
+        <div class="modal-scroll" style="flex: 1 1 auto; min-height: 0; overflow-y: auto;
+                    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;">
         ${message ? `<div style="color: var(--text, #ffffff); margin-bottom: 25px; line-height: 1.5; ${align}">${message}</div>` : ''}
         ${listHTML}
         ${bodyHTML ? `<div style="margin-bottom: 25px;">${bodyHTML}</div>` : ''}
-        <div style="display: flex; gap: 15px; margin-top: 25px;">
+        </div>
+        <div style="display: flex; gap: 15px; margin-top: 16px; flex: none;">
           ${cancelText ? `<button id="modal-cancel" style="flex:1; padding:14px;
             background:var(--input, #2c2c2e); border:1px solid var(--border, #38383a);
             color:var(--text, #ffffff); border-radius:12px; font-weight:600; cursor:pointer;">
@@ -138,6 +144,19 @@ function createModal(options, legacyMessage = '', legacyConfirm = 'OK', legacyCa
     `;
 
     document.body.appendChild(dialog);
+
+    // KORJAUS: pitkä sisältö vierii laatikon sisällä (napit aina näkyvissä),
+    // ja taustan klikkaus / Esc sulkee ikkunan, ettei käyttäjä jää jumiin.
+    const _close = () => {
+      document.removeEventListener('keydown', _onKey);
+      if (!dialog.isConnected) return;
+      if (onCancel) onCancel();
+      dialog.remove();
+      resolve(false);
+    };
+    const _onKey = (ev) => { if (ev.key === 'Escape') _close(); };
+    document.addEventListener('keydown', _onKey);
+    dialog.addEventListener('click', (ev) => { if (ev.target === dialog) _close(); });
 
     const confirmBtn = dialog.querySelector('#modal-confirm');
     if (confirmBtn) {
@@ -842,7 +861,12 @@ async function fetchSkyplanOFPBytes(flightId, token, flightNum = '', dateStr = '
     throw new Error("Network request failed while downloading OFP.");
   }
 
-  if (!v1Resp) throw new Error("No response from v1 OFP endpoint.");
+  // KORJAUS: verkkovirhe (esim. koneen wifi ilman nettiä) → offline-välimuisti
+  if (!v1Resp) {
+    const offlineData = await safeGetOffline();
+    if (offlineData) return offlineData;
+    throw new Error("No response from v1 OFP endpoint.");
+  }
 
   if (v1Resp.status === 401 || v1Resp.status === 403) {
     const offlineData = await safeGetOffline();
@@ -1175,7 +1199,9 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
     const hasWaypointLogs = (() => {
       if (typeof getAllWaypointLogs !== 'function') return false;
       try {
-        return Object.keys(getAllWaypointLogs(flightId)).length > 0;
+        if (Object.keys(getAllWaypointLogs(flightId)).length > 0) return true;
+        const ctx = (typeof Cache !== 'undefined') ? Cache.get(`flight:context:${flightId}`, { mode: 'persist' })?.value : null;
+        return !!(ctx?.takeoffIso || ctx?.takeoffFuelKg != null);
       } catch (e) { return false; }
     })();
 
@@ -1243,3 +1269,87 @@ window.previewOFPFromSkyplan = async function(flightId, flightNum, dateStr, tail
     }
   }
 };
+/* ==============================================================
+ * OFP OFFLINE-VÄLIMUISTI (IndexedDB)
+ * ==============================================================
+ * KORJAUS: savePdfToOfflineCache / getPdfFromOfflineCache olivat
+ * kutsuttuina, mutta niitä ei ollut määritelty missään → OFP oli
+ * vain muistissa ja katosi, kun sovellus käynnistettiin uudelleen
+ * ilman nettiä. Nyt PDF tallennetaan IndexedDB:hen ja haetaan sieltä,
+ * kun verkko ei toimi. Yli 14 vrk vanhat poistetaan.
+ * ============================================================== */
+const OFP_IDB_NAME = 'flightdeck_ofp';
+const OFP_IDB_STORE = 'pdfs';
+const OFP_IDB_KEEP_MS = 14 * 24 * 3600e3;
+let _ofpIdbPromise = null;
+
+function _ofpIdb() {
+  if (_ofpIdbPromise) return _ofpIdbPromise;
+  _ofpIdbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('IndexedDB ei tuettu'));
+    const req = indexedDB.open(OFP_IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(OFP_IDB_STORE)) db.createObjectStore(OFP_IDB_STORE, { keyPath: 'fid' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => { _ofpIdbPromise = null; reject(req.error); };
+  });
+  return _ofpIdbPromise;
+}
+
+async function savePdfToOfflineCache(flightId, flightNum, dateStr, pdfBytes, isFinalized) {
+  if (!flightId || !pdfBytes) return;
+  const u8 = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  if (!u8.byteLength) return;
+  const copy = u8.slice().buffer;      // kopio: pdf.js voi irrottaa alkuperäisen puskurin
+  const db = await _ofpIdb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(OFP_IDB_STORE, 'readwrite');
+    tx.objectStore(OFP_IDB_STORE).put({
+      fid: String(flightId), flightNum: flightNum || '', dateStr: dateStr || '',
+      bytes: copy, isFinalized: !!isFinalized, savedAt: Date.now()
+    });
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  _ofpIdbCleanup().catch(() => {});
+}
+
+async function getPdfFromOfflineCache(flightId) {
+  if (!flightId) return null;
+  const db = await _ofpIdb();
+  const rec = await new Promise((resolve, reject) => {
+    const tx = db.transaction(OFP_IDB_STORE, 'readonly');
+    const req = tx.objectStore(OFP_IDB_STORE).get(String(flightId));
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+  if (!rec?.bytes) return null;
+  return {
+    pdfBytes: new Uint8Array(rec.bytes.slice(0)),
+    isFinalized: !!rec.isFinalized,
+    isServerFilled: !!rec.isFinalized,
+    isCached: true,
+    savedAt: rec.savedAt
+  };
+}
+
+let _ofpIdbCleanedAt = 0;
+async function _ofpIdbCleanup() {
+  if (Date.now() - _ofpIdbCleanedAt < 6 * 3600e3) return;
+  _ofpIdbCleanedAt = Date.now();
+  const db = await _ofpIdb();
+  const tx = db.transaction(OFP_IDB_STORE, 'readwrite');
+  const st = tx.objectStore(OFP_IDB_STORE);
+  const req = st.openCursor();
+  req.onsuccess = () => {
+    const c = req.result;
+    if (!c) return;
+    if (Date.now() - (c.value.savedAt || 0) > OFP_IDB_KEEP_MS) c.delete();
+    c.continue();
+  };
+}
+
+window.savePdfToOfflineCache = savePdfToOfflineCache;
+window.getPdfFromOfflineCache = getPdfFromOfflineCache;

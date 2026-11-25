@@ -947,12 +947,31 @@ function openLogbookRowMenu(ev, id) {
 }
 window.openLogbookRowMenu = openLogbookRowMenu;
 
+/* Päivämäärä näyttöön: 2026-11-24 → 24.11.2026 */
+function _lbFmtDate(d) {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : String(d || '');
+}
+window._lbFmtDate = _lbFmtDate;
+
+/* Lajitteluavain: päivä + lähtöaika (off-block), jotta saman päivän lennot ovat aikajärjestyksessä */
+function _lbSortKey(e) {
+  const d = String(e?.date || '');
+  let t = String(e?.departure?.time || '').trim();
+  if (!/^\d{1,2}:?\d{2}$/.test(t)) {
+    const iso = e?.skyplan?.atd || e?.skyplan?.takeoff || '';
+    const m = String(iso).match(/T(\d{2}):(\d{2})/);
+    t = m ? `${m[1]}:${m[2]}` : '';
+  }
+  t = t.replace(/^(\d):/, '0$1:').replace(/^(\d{2})(\d{2})$/, '$1:$2');
+  return `${d} ${t || '99:99'}`;
+}
+
 function renderLogbookTable() {
   const container = document.getElementById('logbook-container');
   if (!container) return;
 
-  const entries = _lbReadAll().sort((a, b) =>
-    String(b.date || '').localeCompare(String(a.date || '')));
+  const entries = _lbReadAll().sort((a, b) => _lbSortKey(b).localeCompare(_lbSortKey(a)));
 
   window._lbEntries = entries;
 
@@ -1023,7 +1042,7 @@ function renderLogbookTable() {
     if (isFSTD) {
       html += `
         <tr style="background:rgba(255,179,0,0.03);">
-          <td style="font-family:var(--font-mono); font-size:12.5px;">${esc(e.date)}</td>
+          <td style="font-family:var(--font-mono); font-size:12.5px;">${esc(_lbFmtDate(e.date))}</td>
           <td colspan="2">
             <span class="badge-fstd">SIM</span>
             <span style="margin-left:8px; font-weight:600; color:var(--warning);">
@@ -1053,13 +1072,12 @@ function renderLogbookTable() {
     const to  = `${e.takeoffs?.day || 0}/${e.takeoffs?.night || 0}`;
     const ldg = `${e.landings?.day || 0}/${e.landings?.night || 0}`;
 
-    const picDisplay = isSPIC
-      ? `<span style="color:var(--accent); font-weight:700;">SPIC</span>`
-      : esc(e.picName || '–');
+    // SPIC-lennoillakin PIC-sarakkeessa kapteenin nimi (SPIC näkyy tila- ja remarks-sarakkeessa)
+    const picDisplay = esc(e.picName || '–');
 
     html += `
       <tr>
-        <td style="font-family:var(--font-mono); font-size:12.5px;">${esc(e.date)}</td>
+        <td style="font-family:var(--font-mono); font-size:12.5px;">${esc(_lbFmtDate(e.date))}</td>
         <td style="font-weight:600;">${esc(e.skyplan?.flightNumber || '')}</td>
         <td style="letter-spacing:0.4px;">
           ${esc(e.departure?.place || '')} ➔ ${esc(e.arrival?.place || '')}
@@ -1185,7 +1203,7 @@ function showLogbookEntryDetail(id) {
       ${sectionTitle('Lento')}
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0 20px;">
         <div>
-          ${row('1. Pvm', e.date)}
+          ${row('1. Pvm', _lbFmtDate(e.date))}
           ${row('2. Lähtö', `${e.departure?.place || ''} ${e.departure?.time || ''}`)}
           ${row('3. Saapuminen', `${e.arrival?.place || ''} ${e.arrival?.time || ''}`)}
           ${row('4. Kone',
@@ -1425,7 +1443,7 @@ function promptLogbookSignature(entryId) {
         <div style="font-size:12.5px; color:var(--dim); line-height:1.4;">
           <strong style="color:var(--text);">${_esc(entry.skyplan?.flightNumber || '')}</strong>
           · ${_esc(entry.departure?.place || '')} → ${_esc(entry.arrival?.place || '')}
-          · ${_esc(entry.date || '')} · ${_esc(entry.totalTimeOfFlight || '')}
+          · ${_esc(_lbFmtDate(entry.date))} · ${_esc(entry.totalTimeOfFlight || '')}
         </div>
 
         ${isPending ? `
@@ -1689,8 +1707,13 @@ async function signAllFlightsForPilot() {
 
   const pilotOptions = [...byPilot.entries()].map(([key, data]) => {
     const savedLicense = getLicenseForPilot(data.name);
+    // Hakuteksti: nimi + lentojen päivät, lentonumerot, reitit ja rekisterit
+    const searchText = [data.name, ...data.entries.map(e => [
+      e.date, e.skyplan?.flightNumber, e.departure?.place, e.arrival?.place,
+      `${e.departure?.place || ''}-${e.arrival?.place || ''}`, e.aircraft?.registration
+    ].filter(Boolean).join(' '))].join(' ').toUpperCase();
     return `
-      <button type="button" class="sign-all-pilot" data-key="${_esc(key)}"
+      <button type="button" class="sign-all-pilot" data-key="${_esc(key)}" data-search="${_esc(searchText)}"
         style="display:flex; align-items:center; gap:14px; padding:14px 16px;
                background:var(--input); border:1px solid var(--border);
                border-radius:10px; color:var(--text); text-align:left;
@@ -1715,9 +1738,15 @@ async function signAllFlightsForPilot() {
       Valitse kapteeni, jonka lennot haluat allekirjoittaa kerralla.
       Jokaisen lennon alle tulee sama allekirjoitus ja lupakirja.
     </div>
-    <div style="max-height:60vh; overflow-y:auto;">
+    <input type="search" id="sign-all-search" placeholder="Hae: kapteeni, pvm, lentonumero, kenttä, rekisteri…"
+           autocomplete="off"
+           style="width:100%; padding:10px 12px; margin-bottom:12px; border-radius:8px;
+                  background:var(--input); color:var(--text); border:1px solid var(--border);
+                  font-size:16px; box-sizing:border-box;">
+    <div id="sign-all-list">
       ${pilotOptions}
     </div>
+    <div id="sign-all-empty" style="display:none; padding:12px 0; color:var(--dim); font-size:13px;">Ei osumia.</div>
   `;
 
   createModal({
@@ -1730,6 +1759,22 @@ async function signAllFlightsForPilot() {
   });
 
   setTimeout(() => {
+    const search = document.getElementById('sign-all-search');
+    if (search) {
+      search.addEventListener('input', () => {
+        const terms = search.value.toUpperCase().trim().split(/\s+/).filter(Boolean);
+        let shown = 0;
+        document.querySelectorAll('.sign-all-pilot').forEach(b => {
+          const hay = b.dataset.search || '';
+          const ok = terms.every(t => hay.includes(t));
+          b.style.display = ok ? 'flex' : 'none';
+          if (ok) shown++;
+        });
+        const empty = document.getElementById('sign-all-empty');
+        if (empty) empty.style.display = shown ? 'none' : '';
+      });
+      search.focus();
+    }
     document.querySelectorAll('.sign-all-pilot').forEach(btn => {
       btn.addEventListener('click', async () => {
         const key = btn.dataset.key;
@@ -1846,7 +1891,8 @@ async function _promptSignAllModal(data) {
           const e = byId.get(entry.id);
           if (!e) continue;
 
-          let finalRemarks = remark;
+          // KORJAUS: tyhjä huomautuskenttä ei enää pyyhi lennon olemassa olevia remarkseja
+          let finalRemarks = remark || e.remarks || '';
           if (spicChecked && !/SPIC/i.test(finalRemarks)) {
             finalRemarks = finalRemarks ? `${finalRemarks}\nSPIC` : 'SPIC';
           }
@@ -1963,7 +2009,7 @@ async function promptTakeoffLandingConfirmation(entryId) {
     <div style="font-size:13px; color:var(--dim); margin-bottom:14px;">
       <strong style="color:var(--text);">${_esc(entry.skyplan?.flightNumber || '')}</strong>
       · ${_esc(entry.departure?.place || '')} → ${_esc(entry.arrival?.place || '')}
-      · ${_esc(entry.date || '')}
+      · ${_esc(_lbFmtDate(entry.date))}
     </div>
 
     <div style="font-size:12px; color:var(--warning); padding:10px 12px;
@@ -2052,8 +2098,7 @@ async function generateLogbookPDF(entries, certification = null) {
   const TABLE_BOTTOM = TABLE_TOP - 28 - MAX_ROWS * ROW_H;
   const TOTALS_TOP = TABLE_BOTTOM - 18;
 
-  const sorted = [...entries].sort((a, b) =>
-    String(a.date || '').localeCompare(String(b.date || '')));
+  const sorted = [...entries].sort((a, b) => _lbSortKey(a).localeCompare(_lbSortKey(b)));
 
   const cols1 = [
     { key: 'date',    label: 'Date',            w: 60 },
@@ -2450,7 +2495,7 @@ function drawTableHeader(page, font, bold, cols, x, topY, color) {
 
 function getColValue(e, key) {
   switch (key) {
-    case 'date':    return e.date;
+    case 'date':    return _lbFmtDate(e.date);
     case 'depP':    return e.departure?.place;
     case 'depT':    return e.departure?.time;
     case 'arrP':    return e.arrival?.place;
@@ -2461,8 +2506,7 @@ function getColValue(e, key) {
     case 'multi':   return e.multiPilot;
     case 'total':   return e.totalTimeOfFlight;
     case 'picName':
-      if (/SPIC/i.test(e.remarks || '')) return `SPIC · ${e.picName || ''}`;
-      return e.picName;
+      return e.picName;   // SPIC näkyy remarks-sarakkeessa
     case 'tkD':     return e.takeoffs?.day || '';
     case 'tkN':     return e.takeoffs?.night || '';
     case 'ldD':     return e.landings?.day || '';
@@ -2830,7 +2874,7 @@ function _buildCsvHeader() {
 async function exportLogbookCSV(options = {}) {
   const entries = (Array.isArray(options.entries) ? options.entries : getLogbookEntries())
     .slice()
-    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    .sort((a, b) => _lbSortKey(a).localeCompare(_lbSortKey(b)));
 
   if (!entries.length) {
     if (typeof showToast === 'function') showToast('Ei kirjauksia vietäväksi.', 'warning');
@@ -3294,6 +3338,16 @@ function _buildHeaderMap(headers) {
   };
 }
 
+/* Multi-pilot-konetyypit (MP-aika = kokonaisaika). Kattaa Airbus A3xx
+ * -nimet sekä lyhenteet kuten 320, 321, 321L, F320, A20N, A21N. */
+function _isMultiPilotType(text) {
+  const s = String(text || '').toUpperCase().trim();
+  if (!s) return false;
+  if (/AIRBUS|BOEING|EMBRAER|BOMBARDIER/.test(s)) return true;
+  return /^(A|F)?3[1-5]\d[A-Z]?(\s|$)|^A2[01]N\b|^A3[1-5]\d\b/.test(s);
+}
+window._isMultiPilotType = _isMultiPilotType;
+
 function _rowToEntry(row, map, lineNum, prevDate = '') {
   const get = (idx) => idx >= 0 ? String(row[idx] || '').trim() : '';
 
@@ -3388,6 +3442,11 @@ function _rowToEntry(row, map, lineNum, prevDate = '') {
   entry.singlePilot = { se: get(map.spSE), me: get(map.spME) };
   entry.multiPilot = get(map.multi);
   entry.totalTimeOfFlight = get(map.total);
+  // KORJAUS: jos CSV:ssä ei ole MP-arvoa, multi-pilot-tyypeillä
+  // (esim. Airbus A3xx) MP-aika = kokonaislentoaika.
+  if (!entry.multiPilot && entry.totalTimeOfFlight && _isMultiPilotType(acField)) {
+    entry.multiPilot = entry.totalTimeOfFlight;
+  }
   entry.picName = get(map.pic);
 
   entry.takeoffs = {
@@ -4173,6 +4232,12 @@ function _compareLogbookEntryWithLog(entry, log) {
     const p = decodeJWT(token) || {};
     myId = String(p.employeeid || p.EmployeeID || p.employeeId || p.nameid || p.sub || '');
   } catch (e) {}
+  // KORJAUS: jos tokenista ei saada ID:tä (vanhentunut/eri claim), käytä
+  // tuonnissa tunnistettua omaa staff-ID:tä miehistölistasta.
+  if (!myId) {
+    const meCrew = (entry.skyplan?.crewPilots || []).find(c => c.isMe && c.staffId);
+    if (meCrew) myId = String(meCrew.staffId);
+  }
 
   /* Vahvista VAIN jos Skyplan toimitti oikean staff-ID:n. Muuten pysyy pending. */
   if (entry.skyplan?.takeoffPending && hasTk && myId) {
@@ -4294,6 +4359,14 @@ function _applyLogbookChanges(changes) {
           entry.arrival.time = d.new;
           break;
         case 'totalTimeOfFlight':
+          // KORJAUS: MP-aika seuraa kokonaisaikaa, jos se oli tyhjä tai sama kuin vanha
+          if (!entry.multiPilot || entry.multiPilot === entry.totalTimeOfFlight ||
+              entry.multiPilot === d.old) {
+            if (entry.multiPilot || _isMultiPilotType(
+                  [entry.aircraft?.make, entry.aircraft?.model, entry.aircraft?.variant].join(' '))) {
+              entry.multiPilot = d.new;
+            }
+          }
           entry.totalTimeOfFlight = d.new;
           break;
         case 'date':
@@ -4786,6 +4859,23 @@ if (document.readyState === 'loading') {
 } else {
   setTimeout(() => autoSyncLogbook('app-launch').catch(() => {}), 5000);
 }
+
+/* KORJAUS: PWA (etenkin iOS) palaa taustalta ilman uutta käynnistystä, joten
+ * 'app-launch' ei laukea ja ⏳-lennot jäivät odottamaan käsin tarkistusta.
+ * Tarkista myös kun sovellus palaa näkyviin, yhteys palaa ja 15 min välein.
+ * autoSyncLogbook rajoittaa itse ajot (SYNC_MIN_INTERVAL) eikä tee mitään,
+ * jos ⏳-lentoja ei ole. */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    setTimeout(() => autoSyncLogbook('resume').catch(() => {}), 2000);
+  }
+});
+window.addEventListener('online', () => {
+  setTimeout(() => autoSyncLogbook('online').catch(() => {}), 2000);
+});
+setInterval(() => {
+  if (document.visibilityState === 'visible') autoSyncLogbook('interval').catch(() => {});
+}, SYNC_MIN_INTERVAL);
 
 /* ==============================================================
  * AUTO-IMPORT · päättyneet lennot

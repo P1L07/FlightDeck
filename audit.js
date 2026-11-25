@@ -229,8 +229,11 @@ async function renderChainStatusBadge() {
     }
     el.style.display = 'inline-flex';
     if (v.intact) {
+        // Ehjää ketjua ei näytetä — merkki tulee esiin vain kun ketju on poikki
+        el.style.display = 'none';
         el.className = 'chain-status ok';
-        el.innerHTML = `🔒 Audit trail ehjä · ${v.total} kirjausta`;
+        el.innerHTML = '';
+        return;
     } else {
         el.className = 'chain-status broken';
         const broken = v.results.filter(r => !r.overallOk).length;

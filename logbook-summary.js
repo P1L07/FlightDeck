@@ -19,7 +19,8 @@
 'use strict';
 
 const LB_SUMMARY_PERIOD_KEY = 'logbook_summary_period';
-const LB_VIEW_KEY = 'logbook_view_mode';
+// v2: Yhteenveto on oletusnäkymä (vanha tallennettu 'list' ei enää ohita sitä)
+const LB_VIEW_KEY = 'logbook_view_mode_v2';
 
 /* ---------------- Apurit ---------------- */
 function _lsEsc(s) {
@@ -54,7 +55,9 @@ function _lsYmd(d) {
 }
 
 function _lsIsFSTD(e) {
-  return !!e.skyplan?.isFSTD || !!(e.fstd?.totalTime && !e.departure?.place && !e.arrival?.place);
+  // KORJAUS: AIMS/CSV-simulaattorisessioilla on usein lähtö-/saapumiskenttä
+  // (esim. UACC), jolloin ne laskettiin lennoiksi. Sessio = FSTD-aika ilman lentoaikaa.
+  return !!e.skyplan?.isFSTD || !!(e.fstd?.totalTime && !e.totalTimeOfFlight);
 }
 
 function _lsIsSPIC(e) { return /SPIC/i.test(e.remarks || ''); }
@@ -86,7 +89,40 @@ function _lsApName(icao) {
   try { return getAirportName(icao) || ''; } catch (e) { return ''; }
 }
 
+/* Konetyyppi yhteenvetoon.
+ * KORJAUS: ennen luettiin vain aircraft.model, mutta CSV/AIMS-tuonnit
+ * tallentavat tyypin make- tai variant-kenttään → ne puuttuivat kokonaan.
+ * Lisäksi samat tyypit eri kirjoitusasuilla (320 / F320 / AIRBUS A320)
+ * yhdistetään yhdeksi riviksi. */
+function _lsAircraftType(e) {
+  const a = e.aircraft || {};
+  const raw = String(a.model || a.make || a.variant || '').trim();
+  if (!raw) return '';
+  const s = raw.toUpperCase().replace(/\s+/g, ' ');
+  const c = s.replace(/[\s\-_]/g, '');           // "DIAMOND DA-40 TDI" → "DIAMONDDA40TDI"
+  if (/^(AIRBUS)?A?321(NEO)?(LR|L)$|^(AIRBUS)?A321NEOLR$|^A21N(LR)?$/.test(c)) return 'Airbus A321 neo LR';
+  if (/^(AIRBUS)?A?321(NEO)?$|^A21N$/.test(c)) return 'Airbus A321';
+  if (/^(AIRBUS)?[AF]?320(NEO)?$|^A20N$/.test(c)) return 'Airbus A320';
+  if (/^(AIRBUS)?A?319/.test(c)) return 'Airbus A319';
+  if (/DA40NG/.test(c)) return 'Diamond DA40 NG';
+  if (/DA40TDI|DA40$/.test(c)) return 'Diamond DA40 TDI';
+  if (/DA42/.test(c)) return 'Diamond DA42 NG';
+  if (/EXTRA330/.test(c)) return 'Extra 330';
+  return raw;
+}
+
 /* Laskuri: key → { label, count, mins } */
+/* SIM-laite yhteenvetoon: "DA42 FNPT II / DA42 / 311" → "DA42 FNPT II",
+ * Airbus-sessiot (SIMT, OPC, LPC…) → "A320 FFS". */
+function _lsSimDevice(e) {
+  const t = String(e.fstd?.type || '').trim();
+  if (t.includes('/')) return t.split('/')[0].trim();
+  const ac = _lsAircraftType(e).replace(/^Airbus /, '');
+  if (/^(FFS|FTD|FNPT( II)?|BITD)$/i.test(t)) return ac ? `${ac} ${t.toUpperCase()}` : t;
+  if (/FNPT|FTD|FFS|BITD/i.test(t)) return t;
+  return ac ? `${ac} FFS` : (t || 'FSTD');
+}
+
 function _lsCounter() {
   const m = new Map();
   return {
@@ -149,7 +185,7 @@ function computeLogbookSummary(allEntries, periodId = 'all', today = new Date())
     longest: null, shortest: null,
     busiestDay: null, busiestMonth: null,
     destinations: _lsCounter(), departures: _lsCounter(), airports: _lsCounter(),
-    routes: _lsCounter(), types: _lsCounter(), regs: _lsCounter(),
+    routes: _lsCounter(), types: _lsCounter(), regs: _lsCounter(), simDevices: _lsCounter(),
     captains: _lsCounter(), firstOfficers: _lsCounter(), flightNumbers: _lsCounter(),
     months: new Map(), years: new Map(),
     weekdays: Array.from({ length: 7 }, () => ({ count: 0, mins: 0 })),
@@ -165,6 +201,7 @@ function computeLogbookSummary(allEntries, periodId = 'all', today = new Date())
     if (_lsIsFSTD(e)) {
       S.fstd += _lsMins(e.fstd?.totalTime);
       S.fstdSessions++;
+      S.simDevices.add(_lsSimDevice(e).toUpperCase(), _lsSimDevice(e), _lsMins(e.fstd?.totalTime));
       continue;
     }
 
@@ -205,7 +242,7 @@ function computeLogbookSummary(allEntries, periodId = 'all', today = new Date())
     if (arr) S.airports.add(arr, arr, 0);
     if (dep && arr) S.routes.add(`${dep}-${arr}`, `${dep} → ${arr}`, total);
 
-    const type = String(e.aircraft?.model || '').trim();
+    const type = _lsAircraftType(e);
     const reg = String(e.aircraft?.registration || '').toUpperCase().trim();
     if (type) S.types.add(type.toUpperCase(), type, total);
     if (reg) S.regs.add(reg, reg, total);
@@ -381,7 +418,9 @@ function _lsFlightLine(rec) {
   return `<b>${_lsFmt(rec.mins)} h</b><br><span class="lbs-stat-sub">${fn}${_lsEsc(e.departure?.place || '?')} → ${_lsEsc(e.arrival?.place || '?')} · ${_lsEsc(e.date)}</span>`;
 }
 
-const _LS_MONTHS_FI = ['tam', 'hel', 'maa', 'huh', 'tou', 'kes', 'hei', 'elo', 'syy', 'lok', 'mar', 'jou'];
+const _LS_MONTHS_FI = (window.getLang && getLang() === 'en')
+  ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  : ['tam', 'hel', 'maa', 'huh', 'tou', 'kes', 'hei', 'elo', 'syy', 'lok', 'mar', 'jou'];
 
 function renderLogbookSummary() {
   const container = document.getElementById('logbook-summary');
@@ -475,7 +514,9 @@ function renderLogbookSummary() {
     </div>`;
 
   /* Viikonpäivät */
-  const wdNames = ['ma', 'ti', 'ke', 'to', 'pe', 'la', 'su'];
+  const wdNames = (window.getLang && getLang() === 'en')
+    ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    : ['ma', 'ti', 'ke', 'to', 'pe', 'la', 'su'];
   const maxW = Math.max(1, ...S.weekdays.map(w => w.count));
   const weekdayHTML = `
     <div class="lbs-card">
@@ -495,29 +536,41 @@ function renderLogbookSummary() {
     ? 'Ei PIC-lentoja perämiehen kanssa'
     : 'Tallentuu uusista tuonneista (miehistötieto)';
 
+  /* --- Mittaristo (A): tärkein ensin --- */
+  const roleParts = [
+    { k: 'Co-pilot', m: S.copilot, c: 'var(--accent)' },
+    { k: 'PIC', m: S.pic, c: 'var(--success)' },
+    { k: 'Dual', m: S.dual, c: 'var(--warning)' },
+    { k: 'Instructor', m: S.instructor, c: '#bf5af2' }
+  ].filter(p => p.m > 0);
+  const roleSum = roleParts.reduce((a, p) => a + p.m, 0) || 1;
+  const roleHTML = `
+    <div class="lbs-card">
+      <div class="card-label">Tehtävä</div>
+      <div class="lbs-stackbar">${roleParts.map(p =>
+        `<span style="width:${(p.m / roleSum * 100).toFixed(1)}%;background:${p.c}" title="${_lsEsc(p.k)} ${_lsFmt(p.m)}"></span>`).join('')}</div>
+      <div class="lbs-legend">${roleParts.map(p =>
+        `<span><i style="background:${p.c}"></i>${_lsEsc(p.k)} <b>${_lsFmt(p.m)}</b> · ${pct(p.m)}</span>`).join('')}</div>
+      <div class="lbs-chips">
+        <span>Yö <b>${_lsFmt(S.night)}</b></span>
+        <span>IFR <b>${_lsFmt(S.ifr)}</b></span>
+        <span>Nousut <b>${toTot}</b> <small>(yö ${S.toNight})</small></span>
+        <span>Laskut <b>${ldgTot}</b> <small>(yö ${S.ldgNight})</small></span>
+        <span>Koneet <b>${S.regs.size()}</b> <small>(${S.types.size()} tyyppiä)</small></span>
+        ${(S.se || S.me) ? `<span>Single-pilot <b>${_lsFmt(S.se + S.me)}</b></span>` : ''}
+        ${nm ? `<span>Matka <b>${nm.toLocaleString('fi-FI')} NM</b></span>` : ''}
+      </div>
+    </div>`;
+
   container.innerHTML = `
     <div class="lbs-periods">${periodBtns}
       <span class="lbs-range">${S.firstDate ? `${_lsEsc(S.firstDate)} – ${_lsEsc(S.lastDate)}` : ''}</span>
     </div>
 
-    <div class="lbs-grid lbs-grid-hero">
-      ${_lsStat('Lennot', S.flights, `${S.sectorsWithTime ? 'ka. ' + avg + ' h / lento' : ''}`)}
-      ${_lsStat('Yhteensä', _lsFmt(S.total), 'block-tunnit', 'lbs-accent')}
-      ${_lsStat('PIC', _lsFmt(S.pic), pct(S.pic))}
-      ${_lsStat('Co-pilot', _lsFmt(S.copilot), pct(S.copilot))}
-      ${_lsStat('Yö', _lsFmt(S.night), pct(S.night))}
-      ${_lsStat('IFR', _lsFmt(S.ifr), pct(S.ifr))}
-      ${_lsStat('Multi-pilot', _lsFmt(S.multiPilot), '')}
-      ${_lsStat('Nousut', toTot, `päivä ${S.toDay} · yö ${S.toNight}`)}
-      ${_lsStat('Laskut', ldgTot, `päivä ${S.ldgDay} · yö ${S.ldgNight}`)}
-      ${S.spic ? _lsStat('SPIC', _lsFmt(S.spic), '') : ''}
-      ${(S.se || S.me) ? _lsStat('Single-pilot', _lsFmt(S.se + S.me), `SE ${_lsFmt(S.se)} · ME ${_lsFmt(S.me)}`) : ''}
-      ${(S.dual || S.instructor) ? _lsStat('Dual / Instr.', `${_lsFmt(S.dual)} / ${_lsFmt(S.instructor)}`, '') : ''}
-      ${S.fstdSessions ? _lsStat('FSTD', _lsFmt(S.fstd), `${S.fstdSessions} sessiota`) : ''}
-      ${nm ? _lsStat('Matka', `${nm.toLocaleString('fi-FI')} NM`, `${Math.round(nm * 1.852).toLocaleString('fi-FI')} km${S.distanceFlights < S.flights ? ` · ${S.distanceFlights}/${S.flights} lentoa` : ''}`) : ''}
-      ${_lsStat('Kentät', S.airports.size(), `${S.routes.size()} reittiä`)}
-      ${_lsStat('Koneet', S.regs.size(), `${S.types.size()} tyyppiä`)}
-      ${_lsStat('Allekirjoitettu', `${S.signed}/${S.flights}`, S.pending ? `⏳ ${S.pending} odottaa Skyplania` : '', S.unsigned ? 'lbs-warn' : 'lbs-ok')}
+    <div class="lbs-card lbs-hero">
+      <div class="card-label">Lentoaika yhteensä</div>
+      <div class="lbs-hero-val">${_lsFmt(S.total)}</div>
+      <div class="lbs-stat-sub">${S.flights} lentoa${S.sectorsWithTime ? ` · ka. ${avg} h / lento` : ''}${S.pending ? ` · ⏳ ${S.pending} odottaa Skyplania` : ''}</div>
     </div>
 
     <div class="lbs-grid lbs-grid-2 lbs-stretch">
@@ -525,37 +578,46 @@ function renderLogbookSummary() {
       ${ftlHTML}
     </div>
 
-    <div class="lbs-masonry">
-      ${_lsTopList('Eniten lennetyt kohteet', S.destinations.top(10), { withName: true })}
-      ${_lsTopList('Eniten lennetty kapteenin kanssa', S.captains.top(10), { empty: 'Ei co-pilot-lentoja' })}
-      ${_lsTopList('Eniten lennetty perämiehen kanssa', S.firstOfficers.top(10), { empty: foEmpty })}
-      ${_lsTopList('Reitit', S.routes.top(10))}
-      ${_lsTopList('Kentät (lähtö + saapuminen)', S.airports.top(10), { withName: true, unit: 'käyntiä' })}
-      ${_lsTopList('Lähtökentät', S.departures.top(10), { withName: true })}
-      ${_lsTopList('Konetyypit', S.types.top(10))}
-      ${_lsTopList('Rekisterit', S.regs.top(10))}
-      ${_lsTopList('Lentonumerot', S.flightNumbers.top(10))}
-      <div class="lbs-card">
-        <div class="card-label">Ennätykset</div>
-        <div class="lbs-grid lbs-grid-2 lbs-tight">
-          ${_lsStat('Pisin lento', _lsFlightLine(S.longest))}
-          ${_lsStat('Lyhyin lento', _lsFlightLine(S.shortest))}
-          ${_lsStat('Kiireisin päivä', S.busiestDay ? `${S.busiestDay.count} ${S.busiestDay.count === 1 ? 'sektori' : 'sektoria'}` : '–',
-              S.busiestDay ? `${_lsEsc(S.busiestDay.date)} · ${_lsFmt(S.busiestDay.mins)} h` : '')}
-          ${_lsStat('Kiireisin kuukausi', S.busiestMonth ? `${_lsFmt(S.busiestMonth.mins)} h` : '–',
-              S.busiestMonth ? `${_lsEsc(S.busiestMonth.key)} · ${S.busiestMonth.count} lentoa` : '')}
-          ${_lsStat('Ensimmäinen lento', _lsEsc(S.firstDate || '–'))}
-          ${_lsStat('Viimeisin lento', _lsEsc(S.lastDate || '–'))}
-        </div>
-      </div>
+    <div class="lbs-grid lbs-grid-key">
+      ${_lsStat('Multi-pilot', _lsFmt(S.multiPilot), pct(S.multiPilot), 'lbs-accent')}
+      ${_lsStat('PIC', _lsFmt(S.pic), S.spic ? `josta SPIC ${_lsFmt(S.spic)}` : pct(S.pic))}
+      ${_lsStat('SIM', _lsFmt(S.fstd), `${S.fstdSessions} sessiota`)}
     </div>
+
+    ${roleHTML}
 
     ${monthsHTML}
 
-    <div class="lbs-grid lbs-grid-2 lbs-stretch">
-      ${yearsHTML}
-      ${weekdayHTML}
-    </div>
+        <div class="lbs-masonry">
+          ${_lsTopList('Konetyypit', S.types.top(10))}
+          ${S.fstdSessions ? _lsTopList('SIM-ajat', S.simDevices.top(10), { unit: 'sessiota' }) : ''}
+          ${_lsTopList('Eniten lennetyt kohteet', S.destinations.top(10), { withName: true })}
+          ${_lsTopList('Eniten lennetty kapteenin kanssa', S.captains.top(10), { empty: 'Ei co-pilot-lentoja' })}
+          ${_lsTopList('Eniten lennetty perämiehen kanssa', S.firstOfficers.top(10), { empty: foEmpty })}
+          ${_lsTopList('Reitit', S.routes.top(10))}
+          ${_lsTopList('Lähtökentät', S.departures.top(10), { withName: true })}
+          ${_lsTopList('Rekisterit', S.regs.top(10))}
+          ${_lsTopList('Lentonumerot', S.flightNumbers.top(10))}
+          <div class="lbs-card">
+            <div class="card-label">Ennätykset</div>
+            <div class="lbs-grid lbs-grid-2 lbs-tight">
+              ${_lsStat('Pisin lento', _lsFlightLine(S.longest))}
+              ${_lsStat('Lyhyin lento', _lsFlightLine(S.shortest))}
+              ${_lsStat('Kiireisin päivä', S.busiestDay ? `${S.busiestDay.count} ${S.busiestDay.count === 1 ? 'sektori' : 'sektoria'}` : '–',
+                  S.busiestDay ? `${_lsEsc(S.busiestDay.date)} · ${_lsFmt(S.busiestDay.mins)} h` : '')}
+              ${_lsStat('Kiireisin kuukausi', S.busiestMonth ? `${_lsFmt(S.busiestMonth.mins)} h` : '–',
+                  S.busiestMonth ? `${_lsEsc(S.busiestMonth.key)} · ${S.busiestMonth.count} lentoa` : '')}
+              ${_lsStat('Ensimmäinen lento', _lsEsc(S.firstDate || '–'))}
+              ${_lsStat('Viimeisin lento', _lsEsc(S.lastDate || '–'))}
+            </div>
+          </div>
+        </div>
+        <div class="lbs-grid lbs-grid-2 lbs-stretch">
+          ${yearsHTML}
+          ${weekdayHTML}
+        </div>
+      
+
   `;
 }
 window.renderLogbookSummary = renderLogbookSummary;
@@ -568,7 +630,7 @@ window.setLogbookSummaryPeriod = setLogbookSummaryPeriod;
 
 /* ---------------- Näkymän vaihto: Kirjaukset / Yhteenveto ---------------- */
 function setLogbookView(mode) {
-  if (mode !== 'summary') mode = 'list';
+  if (mode !== 'list') mode = 'summary';
   try { localStorage.setItem(LB_VIEW_KEY, mode); } catch (e) {}
   const list = document.getElementById('logbook-container');
   const sum = document.getElementById('logbook-summary');
@@ -599,8 +661,8 @@ window.setLogbookView = setLogbookView;
   hook();
   const init = () => {
     hook();
-    let mode = 'list';
-    try { mode = localStorage.getItem(LB_VIEW_KEY) || 'list'; } catch (e) {}
+    let mode = 'summary';
+    try { mode = localStorage.getItem(LB_VIEW_KEY) || 'summary'; } catch (e) {}
     setLogbookView(mode);
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
